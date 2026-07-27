@@ -1,0 +1,14 @@
+D:\BackUp\ShortHandCreater\bin\Release\net10.0\ShortHandCreater.exe
+D:\BackUp\ShortHandCreater\bin\Release\net10.0\ShortHandCreater.deps.json
+D:\BackUp\ShortHandCreater\bin\Release\net10.0\ShortHandCreater.runtimeconfig.json
+D:\BackUp\ShortHandCreater\bin\Release\net10.0\ShortHandCreater.dll
+D:\BackUp\ShortHandCreater\bin\Release\net10.0\ShortHandCreater.pdb
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.GeneratedMSBuildEditorConfig.editorconfig
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.AssemblyInfoInputs.cache
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.AssemblyInfo.cs
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.csproj.CoreCompileInputs.cache
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.dll
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\refint\ShortHandCreater.dll
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.pdb
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ShortHandCreater.genruntimeconfig.cache
+D:\BackUp\ShortHandCreater\obj\Release\net10.0\ref\ShortHandCreater.dll

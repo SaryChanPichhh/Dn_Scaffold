@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+	  <PackAsTool>true</PackAsTool>
+	  <ToolCommandName>dn</ToolCommandName>
+	  <PackageOutputPath>./nupkg</PackageOutputPath>
+	  <PackageId>DnScaffold</PackageId>
+	  <Version>1.0.4</Version>
+	  <Authors>SaryChanPich</Authors>
+	  <Company>SaryChanPich</Company>
+	  <Description>CLI tool to scaffold .NET class libraries into a folder structure.</Description>
+	  <PackageTags>dotnet-tool;scaffold;cli;codegen</PackageTags>
+	  <RepositoryUrl>https://github.com/you/repo</RepositoryUrl>
+	  <PackageLicenseExpression>MIT</PackageLicenseExpression>
+	  <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+</Project>
