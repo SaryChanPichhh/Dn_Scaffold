@@ -12,3 +12,4 @@ D:\BackUp\ShortHandCreater\obj\Debug\net10.0\refint\ShortHandCreater.dll
 D:\BackUp\ShortHandCreater\obj\Debug\net10.0\ShortHandCreater.pdb
 D:\BackUp\ShortHandCreater\obj\Debug\net10.0\ShortHandCreater.genruntimeconfig.cache
 D:\BackUp\ShortHandCreater\obj\Debug\net10.0\ref\ShortHandCreater.dll
+D:\BackUp\ShortHandCreater\obj\Debug\net10.0\ShortHandCreater.sourcelink.json

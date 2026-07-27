@@ -9,12 +9,12 @@
 	  <ToolCommandName>dn</ToolCommandName>
 	  <PackageOutputPath>./nupkg</PackageOutputPath>
 	  <PackageId>DnScaffold</PackageId>
-	  <Version>1.0.4</Version>
+	  <Version>1.0.12</Version>
 	  <Authors>SaryChanPich</Authors>
 	  <Company>SaryChanPich</Company>
 	  <Description>CLI tool to scaffold .NET class libraries into a folder structure.</Description>
 	  <PackageTags>dotnet-tool;scaffold;cli;codegen</PackageTags>
-	  <RepositoryUrl>https://github.com/you/repo</RepositoryUrl>
+	  <RepositoryUrl>https://github.com/SaryChanPichhh/Dn_Scaffold.git</RepositoryUrl>
 	  <PackageLicenseExpression>MIT</PackageLicenseExpression>
 	  <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>

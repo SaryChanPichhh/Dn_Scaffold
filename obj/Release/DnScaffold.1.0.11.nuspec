@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>DnScaffold</id>
+    <version>1.0.11</version>
+    <authors>SaryChanPich</authors>
+    <license type="expression">MIT</license>
+    <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <readme>README.md</readme>
+    <description>CLI tool to scaffold .NET class libraries into a folder structure.</description>
+    <tags>dotnet-tool scaffold cli codegen</tags>
+    <packageTypes>
+      <packageType name="DotnetTool" />
+    </packageTypes>
+    <repository type="git" url="https://github.com/SaryChanPichhh/Dn_Scaffold.git" commit="bcc0c6855b21f91f1ac4801feffb0f4b5e56b2d2" />
+  </metadata>
+  <files>
+    <file src="D:\BackUp\ShortHandCreater\obj\Release\net10.0\DotnetToolSettings.xml" target="tools\net10.0\any\DotnetToolSettings.xml" />
+    <file src="D:\BackUp\ShortHandCreater\bin\Release\net10.0\publish\ShortHandCreater.deps.json" target="tools\net10.0\any\ShortHandCreater.deps.json" />
+    <file src="D:\BackUp\ShortHandCreater\bin\Release\net10.0\publish\ShortHandCreater.dll" target="tools\net10.0\any\ShortHandCreater.dll" />
+    <file src="D:\BackUp\ShortHandCreater\bin\Release\net10.0\publish\ShortHandCreater.pdb" target="tools\net10.0\any\ShortHandCreater.pdb" />
+    <file src="D:\BackUp\ShortHandCreater\bin\Release\net10.0\publish\ShortHandCreater.runtimeconfig.json" target="tools\net10.0\any\ShortHandCreater.runtimeconfig.json" />
+    <file src="D:\BackUp\ShortHandCreater\README.md" target="\README.md" />
+  </files>
+</package>
