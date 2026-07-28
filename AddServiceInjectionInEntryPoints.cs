@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -42,14 +42,17 @@ namespace ShortHandCreater
 
             string infraUsing = $"using {prefix}.Infrastructure.DependencyInjection;";
             string presUsing = $"using {prefix}.Presentation.DependencyInjection;";
+            string appUsing = $"using {prefix}.Application.DependencyInjection;";
             string infraCall = $"Add{moduleFolderName}Infrastructure";
             string presCall = $"Add{moduleFolderName}Presentation";
+            string appCall = $"Add{moduleFolderName}Application";
 
             bool changed = false;
 
             // 1. Add using directives if missing (right after the last existing `using` line).
             content = EnsureUsing(content, infraUsing, ref changed);
             content = EnsureUsing(content, presUsing, ref changed);
+            content = EnsureUsing(content, appUsing, ref changed);
 
             // 2. Append .Add{Module}Infrastructure() to a statement that already calls
             //    some *Infrastructure(...) extension on builder.Services.
@@ -60,6 +63,11 @@ namespace ShortHandCreater
             //    .AddControllers() / some *Presentation(...) extension.
             content = AppendToChain(content, callNameHint: "Presentation", newCall: presCall, ref changed,
                 onNotFound: () => PrintManualSnippet("Presentation", presCall));
+
+            // 4. Append .Add{Module}Application() to a statement that already calls
+            //    some *Application(...) extension.
+            content = AppendToChain(content, callNameHint: "Application", newCall: appCall, ref changed,
+                onNotFound: () => PrintManualSnippet("Application", appCall));
 
             if (!changed)
             {
@@ -125,7 +133,9 @@ namespace ShortHandCreater
 
                     bool matchesHint = callNameHint == "Presentation"
                         ? statement.Contains(".AddControllers()") || statement.Contains("Presentation(")
-                        : statement.Contains("Infrastructure(");
+                        : callNameHint == "Application"
+                            ? statement.Contains("Application(")
+                            : statement.Contains("Infrastructure(");
 
                     if (!matchesHint) continue;
 
