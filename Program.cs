@@ -2,6 +2,11 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.Intrinsics.X86;
+using System.Security.Principal;
+using System.Text;
+using System.Text.RegularExpressions;
 
 if (args.Length == 0 || HasFlag(args, "--help") || HasFlag(args, "-h"))
 {
@@ -24,9 +29,30 @@ if (args.Length < 1)
 
 string action = args[0].ToLowerInvariant();
 
+if (action == "link" || action == "l")
+{
+    string? linkName = GetArgValue(args, "--name") ?? GetArgValue(args, "-n");
+    string? linkLocation = GetArgValue(args, "--location") ?? GetArgValue(args, "-l");
+    string? linkHost = GetArgValue(args, "--host");
+    bool linkDryRun = HasFlag(args, "--dry-run");
+
+    if (string.IsNullOrWhiteSpace(linkName) || string.IsNullOrWhiteSpace(linkLocation) || string.IsNullOrWhiteSpace(linkHost))
+    {
+        Console.WriteLine("Error: --name, --location, and --host are all required for the link action.");
+        Console.WriteLine("Example: dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api");
+        return;
+    }
+
+    string? resolvedLinkLocation = ResolveLocation(linkLocation, Directory.GetCurrentDirectory());
+    if (resolvedLinkLocation == null) return; // ambiguous match - options already printed
+
+    LinkHost(linkName, Path.GetFullPath(resolvedLinkLocation), linkHost, linkDryRun);
+    return;
+}
+
 if (action != "g" && action != "generate")
 {
-    Console.WriteLine($"Error: unknown action \"{action}\". Currently supported: g (generate)");
+    Console.WriteLine($"Error: unknown action \"{action}\". Currently supported: g (generate), link (wire host references into an existing module)");
     return;
 }
 
@@ -47,6 +73,7 @@ string? slnFlag = GetArgValue(args, "--sln") ?? GetArgValue(args, "-s");
 string? entityFlag = GetArgValue(args, "--entity") ?? GetArgValue(args, "-e");
 string sharedRoot = GetArgValue(args, "--shared-root") ?? GetArgValue(args, "-r") ?? "MBPOS";
 bool skipShared = HasFlag(args, "--no-shared");
+string? hostFlag = GetArgValue(args, "--host");
 
 if (string.IsNullOrWhiteSpace(nameArg) || string.IsNullOrWhiteSpace(location))
 {
@@ -81,7 +108,7 @@ string? slnPath = slnFlag != null
 // ============================================================
 if (isModule)
 {
-    GenerateModule(nameArg, fullLocation, slnPath, sharedRoot, entityFlag, skipShared, isDryRun);
+    GenerateModule(nameArg, fullLocation, slnPath, sharedRoot, entityFlag, skipShared, hostFlag, isDryRun);
     return;
 }
 
@@ -288,20 +315,150 @@ static string Singularize(string word)
     return word;
 }
 
+// Given a --host value, resolves it to an actual .csproj file:
+// - if it's already a .csproj path -> use as-is (must exist)
+// - if it's a directory -> find a single *.csproj inside it
+static string? ResolveHostCsproj(string hostArg, string searchRoot)
+{
+    string fullPath = Path.GetFullPath(hostArg);
+
+    if (fullPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+    {
+        if (File.Exists(fullPath)) return fullPath;
+        Console.WriteLine($"Warning: --host project file not found: {fullPath}");
+        return null;
+    }
+
+    if (Directory.Exists(fullPath))
+    {
+        var csprojFiles = Directory.GetFiles(fullPath, "*.csproj");
+        if (csprojFiles.Length == 1) return csprojFiles[0];
+
+        if (csprojFiles.Length > 1)
+        {
+            Console.WriteLine($"Warning: --host folder \"{fullPath}\" contains multiple .csproj files:");
+            foreach (var f in csprojFiles) Console.WriteLine($"  - {f}");
+            Console.WriteLine("Point --host at the specific .csproj file instead.");
+            return null;
+        }
+
+        Console.WriteLine($"Warning: --host folder \"{fullPath}\" contains no .csproj file.");
+        return null;
+    }
+
+    Console.WriteLine($"Warning: --host path not found: {fullPath}");
+    return null;
+}
+
+static bool RunDotnet(string arguments)
+{
+    Console.WriteLine($"> dotnet {arguments}");
+
+    var psi = new ProcessStartInfo
+    {
+        FileName = "dotnet",
+        Arguments = arguments,
+        UseShellExecute = false
+    };
+
+    using var process = Process.Start(psi);
+    process?.WaitForExit();
+    return process?.ExitCode == 0;
+}
+
+// ============================================================
+// LINK action — "dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api"
+//
+// For a module that's already been scaffolded (via `dn g m`), wires the
+// entry-point/host project's references to that module's Presentation,
+// Application, and Infrastructure projects — the same three references
+// shown in your example:
+//
+//   <ProjectReference Include="...MBPOS.Modules.Products.Presentation.csproj" />
+//   <ProjectReference Include="...MBPOS.Modules.Products.Application.csproj" />
+//   <ProjectReference Include="...MBPOS.Modules.Products.Infrastructure.csproj" />
+//
+// Does not touch Domain/Contracts/UnitTests, does not modify the module
+// itself, and does not require a .sln (it only runs `dotnet add reference`).
+// ============================================================
+static void LinkHost(string prefix, string parentLocation, string hostArg, bool isDryRun)
+{
+    var segments = prefix.Split('.', StringSplitOptions.RemoveEmptyEntries);
+    if (segments.Length < 1)
+    {
+        Console.WriteLine($"Error: \"{prefix}\" is not a valid module name (expected e.g. \"MBPOS.Modules.Products\").");
+        return;
+    }
+
+    string moduleFolderName = segments[^1];
+    string moduleRoot = Path.Combine(parentLocation, moduleFolderName);
+
+    string LayerCsProj(string layer) =>
+        Path.Combine(moduleRoot, $"{prefix}.{layer}", $"{prefix}.{layer}.csproj");
+
+    string[] layersToLink = { "Presentation", "Application", "Infrastructure" };
+
+    var missing = layersToLink.Where(l => !File.Exists(LayerCsProj(l))).ToList();
+    if (missing.Count > 0)
+    {
+        Console.WriteLine($"Error: couldn't find the following project(s) under \"{moduleRoot}\":");
+        foreach (var l in missing) Console.WriteLine($"  - {LayerCsProj(l)}");
+        Console.WriteLine("Check --name/--location match the module you already scaffolded with 'dn g m'.");
+        return;
+    }
+
+    string? hostCsproj = ResolveHostCsproj(hostArg, Directory.GetCurrentDirectory());
+    if (hostCsproj == null)
+    {
+        Console.WriteLine("Aborting: could not resolve --host to a single .csproj.");
+        return;
+    }
+
+    if (isDryRun)
+    {
+        Console.WriteLine("=== DRY RUN (link) — no changes will be made ===");
+        Console.WriteLine();
+        Console.WriteLine($"Host project: {hostCsproj}");
+        Console.WriteLine();
+        Console.WriteLine("[WILL WIRE HOST REFERENCES]");
+        foreach (var l in layersToLink)
+            Console.WriteLine($"  {hostCsproj}\n    <- {LayerCsProj(l)}");
+        Console.WriteLine();
+        Console.WriteLine("Run the same command without --dry-run to apply this change.");
+        return;
+    }
+
+    var refs = layersToLink.Select(LayerCsProj).ToArray();
+    var refArgs = string.Join(" ", refs.Select(r => $"\"{r}\""));
+
+    if (RunDotnet($"add \"{hostCsproj}\" reference {refArgs}"))
+    {
+        Console.WriteLine($"Wired host references: {hostCsproj} -> Presentation, Application, Infrastructure");
+    }
+    else
+    {
+        Console.WriteLine($"Error: failed to add references to {hostCsproj}.");
+    }
+}
+
 // ============================================================
 // Module scaffold: creates Domain / Application / Infrastructure /
-// Presentation / Contracts class libs + a UnitTests project, replaces
-// the default Class1.cs in each with real stub files for the given
-// entity, wires up the standard layer references (Shared.* paths are
-// fixed to {sharedRoot}.Shared.<Layer>, not derived from --name), and
-// registers everything in the solution.
+// Presentation / Contracts class libs + a UnitTests project, laid out
+// with the standard sub-folder structure per layer (Entities,
+// Repositories, Requests/Responses, Persistence, Controllers,
+// DependencyInjection, ...), replaces the default Class1.cs in each
+// with real stub files for the given entity, wires up the standard
+// layer references (Shared.* paths are fixed to {sharedRoot}.Shared.<Layer>,
+// not derived from --name), optionally wires the module's Presentation /
+// Application / Infrastructure projects into a host/entry-point project
+// via --host, and registers everything in the solution.
 //
 //   prefix            e.g. "MBPOS.Modules.Products"
 //   moduleFolderName  e.g. "Products"       (derived: last segment of prefix)
 //   moduleRoot        e.g. "{location}/Products"
 //   entity            e.g. "Product"        (derived: singularized moduleFolderName, or --entity)
 // ============================================================
-static void GenerateModule(string prefix, string parentLocation, string? slnPath, string sharedRoot, string? entityOverride, bool skipShared, bool isDryRun)
+static void GenerateModule(string prefix, string parentLocation, string? slnPath, string sharedRoot, string? entityOverride, bool skipShared, string? hostArg, bool isDryRun)
 {
     string[] layers = { "Domain", "Application", "Infrastructure", "Presentation", "Contracts" };
 
@@ -330,122 +487,50 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     string testDir = Path.Combine("UnitTests", testName);
     string testCsProj = Path.Combine(testDir, $"{testName}.csproj");
 
-    // Stub files to create per layer: (relative file name, content).
-    // Deletes the default Class1.cs first.
+    // Stub files to create per layer: (relative file path within the layer project, content).
+    // Files are placed under the standard sub-folders (Entities, Repositories, Persistence, ...)
+    // rather than the project root. Deletes the default Class1.cs first.
+    var model = entity + "Model";
     (string layer, (string file, string content)[] stubs)[] StubPlan() => new[]
     {
         ("Domain", new[]
         {
-            ($"{entity}.cs", $$"""
-                namespace {{LayerNamespace("Domain")}};
+            (Path.Combine("Entities", $"{model}.cs"), $$"""
+                namespace {{LayerNamespace("Domain")}}.Entities;
 
-                public class {{entity}}
+                public class {{model}}
                 {
                     public Guid Id { get; private set; }
 
-                    // TODO: add {{entity}} properties and domain behavior
-                }
-                """),
-            ($"I{entity}Repository.cs", $$"""
-                namespace {{LayerNamespace("Domain")}};
-
-                public interface I{{entity}}Repository
-                {
-                    Task<{{entity}}?> GetByIdAsync(Guid id);
-                    Task AddAsync({{entity}} entity);
-                    Task UpdateAsync({{entity}} entity);
-                    Task DeleteAsync(Guid id);
-                }
-                """)
-        }),
-        ("Application", new[]
-        {
-            ($"Create{entity}.cs", $$"""
-                namespace {{LayerNamespace("Application")}};
-
-                // TODO: implement as a command/handler pair (e.g. MediatR) as needed
-                public class Create{{entity}}
-                {
-                }
-                """),
-            ($"Update{entity}.cs", $$"""
-                namespace {{LayerNamespace("Application")}};
-
-                // TODO: implement as a command/handler pair (e.g. MediatR) as needed
-                public class Update{{entity}}
-                {
-                }
-                """),
-            ($"{entity}Dto.cs", $$"""
-                namespace {{LayerNamespace("Application")}};
-
-                // Internal application-layer DTO (distinct from the public Contracts request/response types)
-                public class {{entity}}Dto
-                {
-                    public Guid Id { get; set; }
-
-                    // TODO: add {{entity}} fields
-                }
-                """)
-        }),
-        ("Infrastructure", new[]
-        {
-            ($"{entity}Repository.cs", $$"""
-                using {{LayerNamespace("Domain")}};
-
-                namespace {{LayerNamespace("Infrastructure")}};
-
-                public class {{entity}}Repository : I{{entity}}Repository
-                {
-                    public Task<{{entity}}?> GetByIdAsync(Guid id)
-                        => throw new NotImplementedException();
-
-                    public Task AddAsync({{entity}} entity)
-                        => throw new NotImplementedException();
-
-                    public Task UpdateAsync({{entity}} entity)
-                        => throw new NotImplementedException();
-
-                    public Task DeleteAsync(Guid id)
-                        => throw new NotImplementedException();
-                }
-                """)
-        }),
-        ("Presentation", new[]
-        {
-            ($"{entity}Controller.cs", $$"""
-                using Microsoft.AspNetCore.Mvc;
-
-                namespace {{LayerNamespace("Presentation")}};
-
-                [ApiController]
-                [Route("api/[controller]")]
-                public class {{entity}}Controller : ControllerBase
-                {
-                    // TODO: add endpoints (Get, Create, Update, Delete)
+                    // TODO: add {{model}} properties and domain behavior
                 }
                 """)
         }),
         ("Contracts", new[]
         {
-            (Path.Combine("Request", $"Create{entity}Request.cs"), $$"""
-                namespace {{LayerNamespace("Contracts")}}.Request;
+            (Path.Combine("Repositories", $"I{entity}Repository.cs"), $$"""
+                using {{LayerNamespace("Domain")}}.Entities;
+
+                namespace {{LayerNamespace("Contracts")}}.Repositories;
+
+                public interface I{{entity}}Repository
+                {
+                    Task<{{model}}?> GetByIdAsync(Guid id);
+                    Task AddAsync({{model}} entity);
+                    Task UpdateAsync({{model}} entity);
+                    Task DeleteAsync(Guid id);
+                }
+                """),
+            (Path.Combine("Requests", $"Create{entity}Request.cs"), $$"""
+                namespace {{LayerNamespace("Contracts")}}.Requests;
 
                 public class Create{{entity}}Request
                 {
                     // TODO: add fields required to create a {{entity}}
                 }
                 """),
-            (Path.Combine("Response", $"Create{entity}Response.cs"), $$"""
-                namespace {{LayerNamespace("Contracts")}}.Response;
-
-                public class Create{{entity}}Response
-                {
-                    public Guid Id { get; set; }
-                }
-                """),
-            (Path.Combine("Request", $"Update{entity}Request.cs"), $$"""
-                namespace {{LayerNamespace("Contracts")}}.Request;
+            (Path.Combine("Requests", $"Update{entity}Request.cs"), $$"""
+                namespace {{LayerNamespace("Contracts")}}.Requests;
 
                 public class Update{{entity}}Request
                 {
@@ -454,18 +539,10 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                     // TODO: add fields that can be updated on a {{entity}}
                 }
                 """),
-            (Path.Combine("Response", $"Update{entity}Response.cs"), $$"""
-                namespace {{LayerNamespace("Contracts")}}.Response;
+            (Path.Combine("Responses", $"{entity}Response.cs"), $$"""
+                namespace {{LayerNamespace("Contracts")}}.Responses;
 
-                public class Update{{entity}}Response
-                {
-                    public bool Success { get; set; }
-                }
-                """),
-            (Path.Combine("Response", $"{entity}Response.cs"), $$"""
-                namespace {{LayerNamespace("Contracts")}}.Response;
-
-                // Returned when fetching a {{entity}}
+                // Returned when fetching, creating, or updating a {{entity}}
                 public class {{entity}}Response
                 {
                     public Guid Id { get; set; }
@@ -473,24 +550,178 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                     // TODO: add {{entity}} fields returned to callers
                 }
                 """)
+        }),
+        ("Application", new[]
+        {
+            (Path.Combine("Services", $"{entity}Service.cs"), $$"""
+                using {{LayerNamespace("Contracts")}}.Repositories;
+
+                namespace {{LayerNamespace("Application")}}.Services;
+
+                public class {{entity}}Service
+                {
+                    private readonly I{{entity}}Repository _repository;
+
+                    public {{entity}}Service(I{{entity}}Repository repository)
+                    {
+                        _repository = repository;
+                    }
+
+                    // TODO: implement {{entity}} use-case methods (Create, Update, Get, Delete)
+                }
+                """),
+            (Path.Combine("DependencyInjection", "ApplicationServiceCollectionExtensions.cs"), $$"""
+                using Microsoft.Extensions.DependencyInjection;
+                using {{LayerNamespace("Application")}}.Services;
+
+                namespace {{LayerNamespace("Application")}}.DependencyInjection;
+
+                public static class ApplicationServiceCollectionExtensions
+                {
+                    public static IServiceCollection Add{{moduleFolderName}}Application(this IServiceCollection services)
+                    {
+                        services.AddScoped<{{entity}}Service>();
+
+                        return services;
+                    }
+                }
+                """)
+        }),
+        ("Infrastructure", new[]
+        {
+            (Path.Combine("Persistence", $"{entity}DbContext.cs"), $$"""
+                // NOTE: requires the Microsoft.EntityFrameworkCore (+ a provider, e.g. .SqlServer) NuGet package.
+                using Microsoft.EntityFrameworkCore;
+                using {{LayerNamespace("Domain")}}.Entities;
+
+                namespace {{LayerNamespace("Infrastructure")}}.Persistence;
+
+                public class {{entity}}DbContext : DbContext
+                {
+                    public {{entity}}DbContext(DbContextOptions<{{entity}}DbContext> options) : base(options)
+                    {
+                    }
+
+                    public DbSet<{{model}}> {{moduleFolderName}} => Set<{{model}}>();
+                }
+                """),
+            (Path.Combine("Persistence", "Repositories", $"{entity}Repository.cs"), $$"""
+                using {{LayerNamespace("Contracts")}}.Repositories;
+                using {{LayerNamespace("Domain")}}.Entities;
+                using {{LayerNamespace("Infrastructure")}}.Persistence;
+
+                namespace {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
+
+                public class {{entity}}Repository : I{{entity}}Repository
+                {
+                    private readonly {{entity}}DbContext _dbContext;
+
+                    public {{entity}}Repository({{entity}}DbContext dbContext)
+                    {
+                        _dbContext = dbContext;
+                    }
+
+                    public Task<{{model}}?> GetByIdAsync(Guid id)
+                        => throw new NotImplementedException();
+
+                    public Task AddAsync({{model}} entity)
+                        => throw new NotImplementedException();
+
+                    public Task UpdateAsync({{model}} entity)
+                        => throw new NotImplementedException();
+
+                    public Task DeleteAsync(Guid id)
+                        => throw new NotImplementedException();
+                }
+                """),
+            (Path.Combine("DependencyInjection", "InfrastructureServiceCollectionExtensions.cs"), $$"""
+                using Microsoft.EntityFrameworkCore;
+                using Microsoft.Extensions.Configuration;
+                using Microsoft.Extensions.DependencyInjection;
+                using {{LayerNamespace("Contracts")}}.Repositories;
+                using {{LayerNamespace("Infrastructure")}}.Persistence;
+                using {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
+
+                namespace {{LayerNamespace("Infrastructure")}}.DependencyInjection;
+
+                public static class InfrastructureServiceCollectionExtensions
+                {
+                    public static IServiceCollection Add{{moduleFolderName}}Infrastructure(this IServiceCollection services, IConfiguration configuration)
+                    {
+                        services.AddDbContext<{{entity}}DbContext>(options =>
+                            options.UseSqlServer(configuration.GetConnectionString("{{moduleFolderName}}")));
+
+                        services.AddScoped<I{{entity}}Repository, {{entity}}Repository>();
+
+                        return services;
+                    }
+                }
+                """)
+        }),
+        ("Presentation", new[]
+        {
+            (Path.Combine("Controllers", $"{entity}Controller.cs"), $$"""
+                using Microsoft.AspNetCore.Mvc;
+                using {{LayerNamespace("Application")}}.Services;
+
+                namespace {{LayerNamespace("Presentation")}}.Controllers;
+
+                [ApiController]
+                [Route("api/[controller]")]
+                public class {{entity}}Controller : ControllerBase
+                {
+                    private readonly {{entity}}Service _service;
+
+                    public {{entity}}Controller({{entity}}Service service)
+                    {
+                        _service = service;
+                    }
+
+                    // TODO: add endpoints (Get, Create, Update, Delete)
+                }
+                """)
         })
     };
+
+    // Empty sub-folders that don't get a stub file yet but should still exist
+    // on disk to match the standard module layout.
+    (string layer, string[] extraDirs)[] ExtraDirPlan() => new[]
+    {
+        ("Domain", new[] { "Services", "ValueObjects" }),
+        ("Application", new[] { "Abstractions", "UseCases", "Validation" }),
+        ("Infrastructure", new[] { "Configuration", Path.Combine("Persistence", "Queries"), Path.Combine("Persistence", "Records"), "Services" }),
+        ("Presentation", new[] { "DependencyInjection" }),
+        ("Contracts", Array.Empty<string>())
+    };
+
+    string? hostCsproj = hostArg != null ? ResolveHostCsproj(hostArg, Directory.GetCurrentDirectory()) : null;
+    if (hostArg != null && hostCsproj == null && !isDryRun)
+    {
+        Console.WriteLine("Continuing without host wiring.");
+    }
 
     if (isDryRun)
     {
         Console.WriteLine("=== DRY RUN (module) — no changes will be made ===");
         Console.WriteLine();
         Console.WriteLine($"Module root: {moduleRoot}");
-        Console.WriteLine($"Entity:      {entity}  (from {(entityOverride != null ? "--entity" : $"singularized \"{moduleFolderName}\"")})");
+        Console.WriteLine($"Entity:      {model}  (from {(entityOverride != null ? "--entity" : $"singularized \"{moduleFolderName}\"")})");
         Console.WriteLine($"Shared root: {sharedRoot}  (from {(GetShownSharedRootSource())})");
         Console.WriteLine();
 
-        foreach (var (layer, stubs) in StubPlan())
+        var stubPlan = StubPlan();
+        var extraDirPlan = ExtraDirPlan();
+
+        foreach (var (layer, stubs) in stubPlan)
         {
             Console.WriteLine($"[WILL CREATE] classlib  {prefix}.{layer}  -> {LayerDir(layer)}");
             Console.WriteLine($"[WILL DELETE]           {Path.Combine(LayerDir(layer), "Class1.cs")}");
             foreach (var (file, _) in stubs)
                 Console.WriteLine($"[WILL CREATE]           {Path.Combine(LayerDir(layer), file)}");
+
+            var extraDirs = extraDirPlan.First(p => p.layer == layer).extraDirs;
+            foreach (var dir in extraDirs)
+                Console.WriteLine($"[WILL CREATE DIR]       {Path.Combine(LayerDir(layer), dir)}  (+ README.md)");
         }
         Console.WriteLine($"[WILL CREATE] xunit     {testName}  -> {testDir}");
         Console.WriteLine($"[WILL DELETE]           {Path.Combine(testDir, "UnitTest1.cs")}");
@@ -498,8 +729,9 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         Console.WriteLine($"[WILL CREATE]           {Path.Combine(testDir, "Services", $"{entity}ServiceTests.cs")}");
         Console.WriteLine();
         Console.WriteLine("[WILL WIRE INTERNAL REFERENCES] (always applied)");
-        Console.WriteLine($"  Application     -> Domain, Contracts");
-        Console.WriteLine($"  Infrastructure  -> Domain, Application");
+        Console.WriteLine($"  Contracts       -> Domain");
+        Console.WriteLine($"  Application     -> Contracts, Domain");
+        Console.WriteLine($"  Infrastructure  -> Application, Contracts, Domain");
         Console.WriteLine($"  Presentation    -> Application, Contracts");
         Console.WriteLine($"  UnitTests       -> Application, Presentation");
         Console.WriteLine();
@@ -518,6 +750,14 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
             Console.WriteLine($"  Infrastructure  -> {SharedCsProj("Infrastructure")}{(File.Exists(SharedCsProj("Infrastructure")) ? "" : "  [NOT FOUND]")}");
         }
         Console.WriteLine();
+        if (hostArg != null)
+        {
+            Console.WriteLine(hostCsproj != null
+                ? $"[WILL WIRE HOST REFERENCES] {hostCsproj}\n" +
+                  $"  <- Presentation, Application, Infrastructure"
+                : $"[SKIP] --host \"{hostArg}\" could not be resolved to a single .csproj — host wiring skipped.");
+            Console.WriteLine();
+        }
         Console.WriteLine(slnPath != null
             ? $"[WILL REGISTER] All projects above added to solution: {slnPath}"
             : "[SKIP] No solution file found or specified — projects will NOT be added to a solution.");
@@ -544,8 +784,12 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     Console.WriteLine($"Created module root: {moduleRoot}");
     Console.WriteLine($"Entity name: {entity}");
 
-    // 1. Create each layer's class library, strip the default Class1.cs, add stub files
-    foreach (var (layer, stubs) in StubPlan())
+    // 1. Create each layer's class library, strip the default Class1.cs, add stub files,
+    //    and create the standard (currently empty) sub-folders for that layer.
+    var stubPlanReal = StubPlan();
+    var extraDirPlanReal = ExtraDirPlan();
+
+    foreach (var (layer, stubs) in stubPlanReal)
     {
         string name = $"{prefix}.{layer}";
         string outDir = LayerDir(layer);
@@ -570,6 +814,24 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
             File.WriteAllText(filePath, content + Environment.NewLine);
             Console.WriteLine($"  created {filePath}");
         }
+
+        var extraDirs = extraDirPlanReal.First(p => p.layer == layer).extraDirs;
+        foreach (var dir in extraDirs)
+        {
+            string dirPath = Path.Combine(outDir, dir);
+            Directory.CreateDirectory(dirPath);
+
+            // Empty folders aren't tracked by git and won't show up in Visual Studio /
+            // Rider's Solution Explorer, since SDK-style projects only surface folders
+            // that contain at least one item matched by the implicit glob — and that
+            // glob explicitly EXCLUDES dot-files (**/.*), so ".gitkeep" doesn't work.
+            // Use a plain, non-dot filename instead so it's picked up as a <None> item.
+            string dirLabel = dir.Replace(Path.DirectorySeparatorChar, '/').Split('/').Last();
+            string keepFilePath = Path.Combine(dirPath, "README.md");
+            File.WriteAllText(keepFilePath, $"Reserved for {dirLabel}. Safe to delete this file once real content lives here.{Environment.NewLine}");
+
+            Console.WriteLine($"  created dir {dirPath}  (+ README.md)");
+        }
     }
 
     // 2. Add each layer to the solution
@@ -583,13 +845,17 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     }
 
     // 3. Wire internal module references FIRST, unconditionally.
-    // These never depend on Shared projects existing, so Infrastructure/Application/
-    // Presentation always get Domain/Contracts wired even if Shared.* isn't there yet.
+    // These never depend on Shared projects existing, so Contracts/Application/
+    // Infrastructure/Presentation always get their internal references wired
+    // even if Shared.* isn't there yet.
+    if (!AddReference(LayerCsProj("Contracts"),
+            LayerCsProj("Domain"))) return;
+
     if (!AddReference(LayerCsProj("Application"),
-            LayerCsProj("Domain"), LayerCsProj("Contracts"))) return;
+            LayerCsProj("Contracts"), LayerCsProj("Domain"))) return;
 
     if (!AddReference(LayerCsProj("Infrastructure"),
-            LayerCsProj("Domain"), LayerCsProj("Application"))) return;
+            LayerCsProj("Application"), LayerCsProj("Contracts"), LayerCsProj("Domain"))) return;
 
     if (!AddReference(LayerCsProj("Presentation"),
             LayerCsProj("Application"), LayerCsProj("Contracts"))) return;
@@ -619,6 +885,20 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         Console.WriteLine("Skipped Shared.* references (--no-shared).");
     }
 
+    // 3c. Wire the module's entry-point-facing projects into a host project, if --host was given.
+    // Best-effort: a missing/ambiguous host never blocks the rest of the module scaffold.
+    if (hostCsproj != null)
+    {
+        if (AddReference(hostCsproj, LayerCsProj("Presentation"), LayerCsProj("Application"), LayerCsProj("Infrastructure")))
+            Console.WriteLine($"  Wired host references: {hostCsproj} -> Presentation, Application, Infrastructure");
+        else
+            Console.WriteLine($"  Warning: failed to wire host references into {hostCsproj}");
+    }
+    else if (hostArg != null)
+    {
+        Console.WriteLine("Skipped host wiring (could not resolve --host to a single .csproj).");
+    }
+
     // 4. Unit test project
     if (!RunDotnet($"new xunit -n {testName} -o \"{testDir}\""))
     {
@@ -643,7 +923,8 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     Directory.CreateDirectory(Path.GetDirectoryName(controllerTestPath)!);
     File.WriteAllText(controllerTestPath, $$"""
         using Xunit;
-        using {{LayerNamespace("Presentation")}};
+        using {{LayerNamespace("Presentation")}}.Controllers;
+        using {{LayerNamespace("Application")}}.Services;
 
         namespace {{testName}}.Controllers;
 
@@ -652,7 +933,7 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
             [Fact]
             public void Controller_Can_Be_Instantiated()
             {
-                var controller = new {{entity}}Controller();
+                var controller = new {{entity}}Controller(null!);
 
                 Assert.NotNull(controller);
             }
@@ -667,29 +948,21 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     Directory.CreateDirectory(Path.GetDirectoryName(serviceTestPath)!);
     File.WriteAllText(serviceTestPath, $$"""
         using Xunit;
-        using {{LayerNamespace("Application")}};
+        using {{LayerNamespace("Application")}}.Services;
 
         namespace {{testName}}.Services;
 
         public class {{entity}}ServiceTests
         {
             [Fact]
-            public void Create{{entity}}_Can_Be_Instantiated()
+            public void {{entity}}Service_Can_Be_Instantiated()
             {
-                var command = new Create{{entity}}();
+                var service = new {{entity}}Service(null!);
 
-                Assert.NotNull(command);
+                Assert.NotNull(service);
             }
 
-            [Fact]
-            public void Update{{entity}}_Can_Be_Instantiated()
-            {
-                var command = new Update{{entity}}();
-
-                Assert.NotNull(command);
-            }
-
-            // TODO: add real behavioral tests once Create{{entity}}/Update{{entity}} are implemented
+            // TODO: add real behavioral tests once {{entity}}Service methods are implemented
         }
 
         """);
@@ -724,24 +997,6 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
             Console.WriteLine($"  Warning: failed to add shared reference: {sharedCsprojPath}");
         }
     }
-
-
-
-    static bool RunDotnet(string arguments)
-    {
-        Console.WriteLine($"> dotnet {arguments}");
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = "dotnet",
-            Arguments = arguments,
-            UseShellExecute = false
-        };
-
-        using var process = Process.Start(psi);
-        process?.WaitForExit();
-        return process?.ExitCode == 0;
-    }
 }
 
 static void PrintHelp()
@@ -754,23 +1009,41 @@ USAGE:
   dn <action> <type> --name <name> --location <location> [options]
 
 ACTIONS:
-  g, generate    Generate a new project or module (currently the only supported action)
+  g, generate    Generate a new project or module
+  l, link        Wire an entry-point/host project's references to an
+                  ALREADY-SCAFFOLDED module's Presentation, Application,
+                  and Infrastructure projects. Use this when the module
+                  already exists and you just need to hook it into a host
+                  (e.g. MBPOS.Api) without regenerating anything.
+
+                  dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api
+
+                  Adds, to the host's .csproj:
+                    <ProjectReference Include=""...MBPOS.Modules.Products.Presentation.csproj"" />
+                    < ProjectReference Include = ""...MBPOS.Modules.Products.Application.csproj"" />
+                    < ProjectReference Include = ""...MBPOS.Modules.Products.Infrastructure.csproj"" />
+
+                  --name and--location must match what you originally passed
+                  to 'dn g m'(same module prefix, same parent location).
+                  --host works the same way as in 'g m' — a.csproj path, or
+                  a folder containing exactly one.csproj.Supports--dry - run.
 
 TYPE:
   Positional argument. Either:
-    m, module      Full module scaffold: Domain, Application, Infrastructure,
-                    Presentation, Contracts + a UnitTests project, with real
-                    stub files (not the default Class1.cs) and the standard
-                    layer references wired up, all added to your solution.
+m, module Full module scaffold: Domain, Application, Infrastructure,
+                Presentation, Contracts +a UnitTests project, laid out with
+                    the standard sub-folder structure per layer, with real stub
+                    files (not the default Class1.cs) and the standard layer
+                    references wired up, all added to your solution.
     <template>     Any valid dotnet template shortname for a single project:
-                    classlib   console   webapi   web   mvc   razor
+                    classlib console   webapi   web   mvc   razor
                     blazorwasm blazorserver   worker   xunit   nunit   mstest
                     wpf   winforms   grpc
 
   Run 'dotnet new list' to see every template installed on your machine.
 
 OPTIONS:
-  -n, --name          (required)  Project name, OR for module type, the module
+  -n, --name(required)  Project name, OR for module type, the module
                                    prefix, e.g. ""MBPOS.Modules.Products"".
   -l, --location      (required)  Folder path or partial/fuzzy path. Matches existing
                                    folders on disk (fully or partially, from the end of
@@ -782,7 +1055,7 @@ OPTIONS:
                                    for module type.
   -e, --entity        (optional)  Entity name used for generated stub files
                                    (module type only). Defaults to the module's
-                                   folder name, singularized (""Products"" -> ""Product"").
+                                   folder name, singularized (""Products""-> ""Product"").
   -r, --shared-root    (optional) Root prefix for Shared project references
                                    (module type only). Defaults to ""MBPOS"", producing
                                    src/Shared/MBPOS.Shared.<Layer>. This is fixed and
@@ -790,20 +1063,26 @@ OPTIONS:
                                    --name (e.g. one starting with ""tests"") won't point
                                    references at the wrong shared projects.
       --no-shared     (optional)  Skip wiring Shared.* references entirely (module type
-                                   only). Internal module references (Application->Domain,
-                                   Infrastructure->Domain/Application, etc.) are ALWAYS
-                                   wired regardless of this flag or whether Shared
-                                   projects exist — Shared references are best-effort
-                                   and just get skipped with a warning if the target
-                                   Shared project isn't found on disk.
+                                   only). Internal module references are ALWAYS wired
+                                   regardless of this flag or whether Shared projects
+                                   exist — Shared references are best-effort and just
+                                   get skipped with a warning if the target Shared
+                                   project isn't found on disk.
+      --host          (optional)  Path to an entry-point (host) .csproj, or a folder
+                                   containing exactly one .csproj (module type only).
+                                   Adds ProjectReferences from the host to the module's
+                                   Presentation, Application, and Infrastructure
+                                   projects. Best-effort — skipped with a warning if
+                                   the host can't be resolved; never blocks the rest
+                                   of the module scaffold.
       --dry-run       (optional)  Preview what would happen without creating anything.
   -h, --help                      Show this help message.
 
 HOW LOCATION RESOLUTION WORKS:
 
-  Say your disk already has: src/Modules/Identity
+  Say your disk already has: src / Modules / Identity
 
-  dn g classlib --name X --location identity
+  dn g classlib--name X --location identity
     → matches existing folder ""src/Modules/Identity"" exactly → uses it
 
   dn g classlib --name X --location modules/vendors
@@ -811,36 +1090,59 @@ HOW LOCATION RESOLUTION WORKS:
     → resolves to ""src/Modules/vendors"" (new subfolder, created fresh)
 
   dn g classlib --name X --location brandnewpath/here
-    → no match anywhere on disk → created exactly as typed: ""brandnewpath/here""
+    → no match anywhere on disk → created exactly as typed: ""brandnewpath / here""
 
-  dn g classlib --name X --location domain
+  dn g classlib--name X --location domain
     → matches MULTIPLE existing folders (e.g. every module has a Domain folder)
     → tool lists all matches and asks you to be more specific instead of guessing
 
 MODULE TYPE (m / module):
 
-  dn g m --name MBPOS.Modules.Products --location src/Modules
+  dn g m--name MBPOS.Modules.Products --location src/Modules
 
   Creates, under src/Modules/Products:
-    MBPOS.Modules.Products.Domain/
-      Product.cs
-      IProductRepository.cs
-    MBPOS.Modules.Products.Application/
-      CreateProduct.cs
-      UpdateProduct.cs
-      ProductDto.cs
-    MBPOS.Modules.Products.Infrastructure/
-      ProductRepository.cs
-    MBPOS.Modules.Products.Presentation/
-      ProductController.cs
-    MBPOS.Modules.Products.Contracts/
-      Request/
+
+    MBPOS.Modules.Products.Domain /
+      Entities /
+        Product.cs
+      Services / (empty, reserved for domain services)
+    ValueObjects / (empty, reserved for value objects)
+
+    MBPOS.Modules.Products.Contracts /
+      Repositories /
+        IProductRepository.cs
+      Requests /
         CreateProductRequest.cs
         UpdateProductRequest.cs
-      Response/
-        CreateProductResponse.cs
-        UpdateProductResponse.cs
+      Responses/
         ProductResponse.cs
+
+    MBPOS.Modules.Products.Application/
+      Services/
+        ProductService.cs
+      DependencyInjection/
+        ApplicationServiceCollectionExtensions.cs
+      Abstractions/         (empty)
+      UseCases/              (empty)
+      Validation/            (empty)
+
+    MBPOS.Modules.Products.Infrastructure/
+      Persistence/
+        ProductDbContext.cs
+        Repositories/
+          ProductRepository.cs
+        Queries/               (empty)
+        Records/                (empty)
+      DependencyInjection/
+        InfrastructureServiceCollectionExtensions.cs
+      Configuration/           (empty)
+      Services/                 (empty)
+
+    MBPOS.Modules.Products.Presentation/
+      Controllers/
+        ProductController.cs
+      DependencyInjection/       (empty)
+
   plus UnitTests/MBPOS.Modules.Products.UnitTests/
     Controllers/
       ProductControllerTests.cs
@@ -848,13 +1150,14 @@ MODULE TYPE (m / module):
       ProductServiceTests.cs
 
   (Entity name ""Product"" is singularized automatically from ""Products"";
-   override with --entity if the automatic singular is wrong, e.g. irregular
-   plurals like ""Categories"" -> ""Category"" is handled, but exotic cases may
+override with --entity if the automatic singular is wrong, e.g.irregular
+plurals like ""Categories"" -> ""Category"" is handled, but exotic cases may
    need --entity explicitly.)
 
   Wires internal references (always, regardless of Shared projects):
-    Application     -> Domain, Contracts
-    Infrastructure  -> Domain, Application
+    Contracts->Domain
+    Application->Contracts, Domain
+    Infrastructure  -> Application, Contracts, Domain
     Presentation    -> Application, Contracts
     UnitTests       -> Application, Presentation
 
@@ -865,44 +1168,56 @@ MODULE TYPE (m / module):
   Then wires Shared references as best-effort (skipped with a warning if the
   Shared project isn't found, so a missing Shared project never blocks the
   internal module wiring):
-    Domain          -> MBPOS.Shared.Domain
-    Application     -> MBPOS.Shared.Application
-    Infrastructure  -> MBPOS.Shared.Infrastructure
+    Domain->MBPOS.Shared.Domain
+    Application->MBPOS.Shared.Application
+    Infrastructure->MBPOS.Shared.Infrastructure
 
   Shared projects are expected at src/Shared/MBPOS.Shared.<Layer> by default;
   override the root with --shared-root if your Shared projects use a
   different prefix.
 
+  If --host is given, also wires the host project's references:
+    <host>.csproj -> Presentation, Application, Infrastructure
+
 EXAMPLES:
 
   Class library, using an existing folder by partial name:
-    dn g classlib --name MBPOS.Modules.Identity.Presentation --location identity
+    dn g classlib--name MBPOS.Modules.Identity.Presentation --location identity
 
   Full explicit path (always works, no resolution needed):
-    dn g classlib --name MBPOS.Modules.Sales.Domain --location src/Modules/Sales
+    dn g classlib--name MBPOS.Modules.Sales.Domain --location src/Modules/Sales
 
   New module folder under an existing parent:
-    dn g classlib --name MBPOS.Modules.Vendors.Domain --location modules/vendors
+    dn g classlib--name MBPOS.Modules.Vendors.Domain --location modules/vendors
 
   Full module scaffold with stub files:
-    dn g m --name MBPOS.Modules.Products --location src/Modules
+    dn g m--name MBPOS.Modules.Products --location src/Modules
 
   Same, with an explicit entity name (irregular plural, or just to be explicit):
-    dn g m --name MBPOS.Modules.Inventory --location src/Modules --entity InventoryItem
+    dn g m--name MBPOS.Modules.Inventory --location src/Modules --entity InventoryItem
+
+  Module scaffold that also wires into the API host:
+    dn g m--name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api
+
+  Wire an ALREADY-SCAFFOLDED module into the API host (module already exists):
+    dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api
 
   Preview a module scaffold before creating anything:
-    dn g m --name MBPOS.Modules.Products --location src/Modules --dry-run
+    dn g m--name MBPOS.Modules.Products --location src/Modules --dry-run
 
   Web API host:
-    dn g webapi --name MBPOS.Api --location host
+    dn g webapi--name MBPOS.Api --location host
 
   Point to a specific solution file explicitly:
-    dn g m --name MBPOS.Modules.Products --location src/Modules --sln MBPOS.slnx
+    dn g m--name MBPOS.Modules.Products --location src/Modules --sln MBPOS.slnx
 
 NOTES:
-  - If --location resolves to an existing folder, the tool reuses it instead of failing.
+  -If--location resolves to an existing folder, the tool reuses it instead of failing.
   - If the target project (or module) folder already exists, the tool aborts to avoid overwriting.
-  - The tool auto-detects .sln or .slnx files in the current directory; use --sln to override.
-  - Run this tool from your solution root so folder scanning and .sln detection work correctly.
+  - The tool auto-detects .sln or .slnx files in the current directory; use--sln to override.
+  - Run this tool from your solution root so folder scanning, .sln detection, and --host
+    resolution work correctly.
+  - The generated Infrastructure stub files reference Microsoft.EntityFrameworkCore types;
+add the corresponding NuGet package(s) to that project before building.
 ");
 }
