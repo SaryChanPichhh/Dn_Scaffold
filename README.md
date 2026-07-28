@@ -1,149 +1,159 @@
-# dn — .NET Module & Project Scaffolder
+# DnScaffold
 
-`dn` is a command-line tool that generates new .NET projects — or a full, layered module — into your existing solution, wires up the project references between them, and registers everything in your `.sln`/`.slnx`. Locations are resolved against your actual folder structure, so there's no config file to maintain.
+Every time you add a new module to a modular .NET monolith, you repeat the same tedious steps — create 5+ class libraries, delete the default `Class1.cs` from each, set up the folder structure, wire `ProjectReference`s between layers, add NuGet packages, register everything in the solution, and hook it into your host's `Program.cs`. **DnScaffold** (`dn`) eliminates all of that.
+
+It's a single `dotnet` CLI tool that takes a module name and generates a complete **Clean Architecture** module — Domain, Contracts, Application, Infrastructure, Presentation, and UnitTests — with real starter files, the correct inter-layer references, required NuGet packages, and solution registration, all in one command. No config files, no templates to maintain, no copy-pasting from an existing module.
 
 ---
 
-## Quick Start
+## Quick Install
 
 ```bash
-# Scaffold a single class library
-dn g --name MBPOS.Modules.Sales.Domain --location modules/sales
-
-# Scaffold a full layered module
-dn g m --name MBPOS.Modules.Products --location src/Modules
-
-# Wire an already-scaffolded module into your API host
-dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api
+dotnet tool install --global DnScaffold
 ```
 
-Run `dn --help` any time for the full built-in reference.
+Once installed, the `dn` command is available globally. For full CLI usage, flags, and examples, see [`USAGE.md`](USAGE.md).
 
 ---
 
-## Actions
+## What Gets Generated
 
-| Action | Aliases | What it does |
-|---|---|---|
-| `generate` | `g` | Creates a new project, or a full module (`m` / `module` type) |
-| `link` | `l` | Wires an entry-point/host project's references into a module that's **already** been scaffolded |
+When you scaffold a module (e.g. `MBPOS.Modules.Products`), DnScaffold creates **5 class library projects + 1 test project**, each with the standard sub-folder layout and real starter files — not the default `Class1.cs`.
+
+```
+src/Modules/Products/
+│
+├── MBPOS.Modules.Products.Domain/
+│   ├── Entities/
+│   │   └── ProductModel.cs
+│   └── ValueObjects/
+│
+├── MBPOS.Modules.Products.Contracts/
+│   ├── Requests/
+│   │   ├── CreateProductRequest.cs
+│   │   └── UpdateProductRequest.cs
+│   └── Responses/
+│       └── ProductResponse.cs
+│
+├── MBPOS.Modules.Products.Application/
+│   ├── Abstractions/
+│   │   └── IProductRepository.cs
+│   ├── DependencyInjection/
+│   │   └── ProductsApplicationServiceCollectionExtensions.cs
+│   ├── UseCases/
+│   │   └── Create/
+│   │       ├── CreateProductsCommand.cs
+│   │       ├── CreateProductsHandler.cs
+│   │       └── CreateProductsResult.cs
+│   └── Validation/
+│       └── CreateProductsCommandValidator.cs
+│
+├── MBPOS.Modules.Products.Infrastructure/
+│   ├── Persistence/
+│   │   ├── Repositories/
+│   │   │   └── ProductRepository.cs
+│   │   ├── Queries/
+│   │   │   └── ProductsQueries.cs
+│   │   └── Records/
+│   ├── DependencyInjection/
+│   │   └── ProductsInfrastructureServiceCollectionExtensions.cs
+│   ├── Configuration/
+│   └── Services/
+│
+├── MBPOS.Modules.Products.Presentation/
+│   ├── Controllers/
+│   │   └── ProductController.cs
+│   └── DependencyInjection/
+│       └── ProductsPresentationServiceCollectionExtensions.cs
+│
+└── UnitTests/MBPOS.Modules.Products.UnitTests/
+    └── Controllers/
+        └── ProductControllerTests.cs
+```
 
 ---
 
-## Basic Usage
+## Layer Responsibilities
 
-```bash
-dn <action> [type] --name <name> --location <location> [options]
-```
+| Layer              | Purpose                                                                                                    |
+|--------------------|------------------------------------------------------------------------------------------------------------|
+| **Domain**         | Core business entities and value objects. No dependencies on other layers — this is the innermost circle.  |
+| **Contracts**      | DTOs only — `Requests` (input) and `Responses` (output). Shared between layers that need a common shape.   |
+| **Application**    | Use cases, repository abstractions (`I{Entity}Repository`), validators, and DI registration. Orchestrates domain logic without knowing how data is stored. |
+| **Infrastructure** | Concrete implementations — repositories, database queries, external service clients. Depends on Application for the abstractions it implements. |
+| **Presentation**   | API controllers and the `AddApplicationPart` DI extension. The only layer that touches ASP.NET Core directly. |
+| **UnitTests**      | xUnit test project targeting Application and Presentation.                                                 |
 
-- **`action`** — `g`/`generate` or `link`/`l`
-- **`type`** (optional, `generate` only) — a dotnet template shortname (`classlib`, `webapi`, `console`, `worker`, `xunit`, …) or `m`/`module` for a full module scaffold. Defaults to `classlib` if omitted.
-
----
-
-## Options
-
-| Flag | Required | Applies to | Description |
-|---|---|---|---|
-| `-n`, `--name` | ✅ | all | Project name, or for `module` type, the module prefix (e.g. `MBPOS.Modules.Products`) |
-| `-l`, `--location` | ✅ | all | Folder path, or a partial/fuzzy path matched against existing folders. For `module` type, this is the **parent** folder the module gets created under |
-| `-s`, `--sln` | optional | all | Path to a specific `.sln`/`.slnx`. Auto-detected in the current directory otherwise. **Required** for module scaffolds |
-| `-e`, `--entity` | optional | `module` | Overrides the auto-singularized entity name (e.g. `Products` → `Product`) |
-| `-r`, `--shared-root` | optional | `module` | Prefix for `Shared.*` references. Defaults to `MBPOS` → `src/Shared/MBPOS.Shared.<Layer>` |
-| `--no-shared` | optional | `module` | Skip wiring `Shared.*` references entirely |
-| `--host` | optional | `module`, `link` | A host `.csproj` path, or a folder containing exactly one `.csproj`. Wires the module's Presentation/Application/Infrastructure into it |
-| `--dry-run` | optional | all | Preview everything that would happen — no files, folders, or references are created |
-| `-h`, `--help` | | | Show full usage |
+> The repository interface (`I{Entity}Repository`) lives in **Application/Abstractions**, not Contracts. Contracts is strictly for DTOs. Infrastructure implements the interface directly.
 
 ---
 
-## How `--location` Resolution Works
+## Reference Wiring
 
-You don't need to type exact paths — `dn` scans your existing folders and matches from the end of the path.
+DnScaffold automatically wires all `ProjectReference`s between layers following the Clean Architecture dependency rule — **inner layers never reference outer layers**.
 
-Say your disk already has `src/Modules/Identity`:
+```
+                    ┌─────────────┐
+                    │   Domain    │  ← innermost, no dependencies
+                    └──────▲──────┘
+                           │
+                    ┌──────┴──────┐
+                    │  Contracts  │  → Domain
+                    └──────▲──────┘
+                           │
+                    ┌──────┴──────┐
+                    │ Application │  → Contracts, Domain
+                    └──────▲──────┘
+                           │
+              ┌────────────┼────────────┐
+              │                         │
+    ┌─────────┴─────────┐   ┌──────────┴──────────┐
+    │  Infrastructure   │   │    Presentation     │
+    │                   │   │                     │
+    │ → Application     │   │ → Application       │
+    │ → Contracts       │   │ → Contracts         │
+    │ → Domain          │   │                     │
+    └───────────────────┘   └─────────────────────┘
 
-| You type | What happens |
-|---|---|
-| `--location identity` | Matches `src/Modules/Identity` exactly → uses it |
-| `--location modules/vendors` | `modules` matches `src/Modules`, `vendors` doesn't exist yet → creates `src/Modules/vendors` |
-| `--location brandnewpath/here` | No match anywhere → creates exactly as typed |
-| `--location domain` | Matches **multiple** folders (every module has a `Domain` folder) → lists them and asks you to be more specific |
+              ┌─────────────────────┐
+              │     UnitTests       │
+              │                     │
+              │ → Application       │
+              │ → Presentation      │
+              └─────────────────────┘
+```
 
-💡 **Tip:** Always try `--dry-run` first if you're unsure how a location will resolve.
+### Summary Table
+
+| Project          | References                          |
+|------------------|-------------------------------------|
+| Domain           | *(none)*                            |
+| Contracts        | Domain                              |
+| Application      | Contracts, Domain                   |
+| Infrastructure   | Application, Contracts, Domain      |
+| Presentation     | Application, Contracts              |
+| UnitTests        | Application, Presentation           |
+
+### Shared Project References (best-effort)
+
+Each module also attempts to wire references to shared, cross-cutting projects:
+
+```
+Domain          → {SharedRoot}.Shared.Domain
+Application     → {SharedRoot}.Shared.Application
+Infrastructure  → {SharedRoot}.Shared.Infrastructure
+```
+
+These are expected at `src/Shared/{SharedRoot}.Shared.<Layer>` (defaults to `MBPOS`). If a shared project is not found on disk, DnScaffold prints a warning and continues — **a missing shared project never blocks the scaffold**.
 
 ---
 
-## Module Scaffold (`m` / `module`)
+## Framework Reference
 
-```bash
-dn g m --name MBPOS.Modules.Products --location src/Modules
-```
+The **Presentation** layer receives a `FrameworkReference` to `Microsoft.AspNetCore.App` because:
 
-Creates a full 5-project module under `src/Modules/Products`, each with real stub files (not the default `Class1.cs`), the standard sub-folder layout, and references wired between layers automatically.
-
-```
-MBPOS.Modules.Products.Domain/
-  Entities/
-    ProductModel.cs
-  Services/            (empty — reserved for domain services)
-  ValueObjects/         (empty)
-
-MBPOS.Modules.Products.Contracts/
-  Requests/
-    CreateProductRequest.cs
-    UpdateProductRequest.cs
-  Responses/
-    ProductResponse.cs
-
-MBPOS.Modules.Products.Application/
-  Abstractions/
-    IProductRepository.cs
-  DependencyInjection/
-    ProductsApplicationServiceCollectionExtensions.cs
-  UseCases/              (empty)
-  Validation/            (empty)
-
-MBPOS.Modules.Products.Infrastructure/
-  Persistence/
-    Repositories/
-      ProductRepository.cs
-    Queries/
-      ProductsQueries.cs
-    Records/                (empty)
-  DependencyInjection/
-    ProductsInfrastructureServiceCollectionExtensions.cs
-  Configuration/           (empty)
-  Services/                 (empty)
-
-MBPOS.Modules.Products.Presentation/
-  Controllers/
-    ProductController.cs
-  DependencyInjection/
-    ProductsPresentationServiceCollectionExtensions.cs
-
-UnitTests/MBPOS.Modules.Products.UnitTests/
-  Controllers/
-    ProductControllerTests.cs
-```
-
-> Entity name (`Product`) is auto-singularized from the module folder name (`Products`). Override with `--entity` for irregular cases.
-
-### Where the repository contract lives
-
-The repository interface (`I{Entity}Repository`) lives in **`Application/Abstractions`**, not Contracts. `Contracts` is reserved for DTOs only (`Requests` / `Responses`). Infrastructure implements the interface directly, and Presentation's controller depends on it too — no separate `{Entity}Service` layer.
-
-### Reference wiring (always applied)
-
-```
-Contracts       -> Domain
-Application     -> Contracts, Domain
-Infrastructure  -> Application, Contracts, Domain
-Presentation    -> Application, Contracts
-UnitTests       -> Application, Presentation
-```
-
-Presentation also gets a `FrameworkReference` to `Microsoft.AspNetCore.App`, since the generated controller inherits `ControllerBase` and the generated `{ModuleName}PresentationServiceCollectionExtensions` exposes:
+- The generated `{Entity}Controller` inherits from `ControllerBase`
+- The generated `{ModuleName}PresentationServiceCollectionExtensions` exposes:
 
 ```csharp
 public static IMvcBuilder Add{ModuleName}Presentation(this IMvcBuilder mvcBuilder)
@@ -154,74 +164,57 @@ public static IMvcBuilder Add{ModuleName}Presentation(this IMvcBuilder mvcBuilde
 }
 ```
 
-Call it from your host's `AddControllers()` chain to register the module's controllers.
-
-### Shared project references (best-effort)
-
-Unless `--no-shared` is passed, `dn` also tries to wire:
-
-```
-Domain          -> {SharedRoot}.Shared.Domain
-Application     -> {SharedRoot}.Shared.Application
-Infrastructure  -> {SharedRoot}.Shared.Infrastructure
-```
-
-expected at `src/Shared/{SharedRoot}.Shared.<Layer>`. If a Shared project isn't found on disk, `dn` just prints a warning and moves on — it never blocks the rest of the scaffold.
-
-### Wiring into a host, at scaffold time
-
-Pass `--host` to also add `ProjectReference`s from your API/host project to the module's Presentation, Application, and Infrastructure projects:
-
-```bash
-dn g m --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api
-```
+This registers the module's controllers as an application part — call it from your host's `AddControllers()` chain.
 
 ---
 
-## Wiring a Host After the Fact — `link`
+## NuGet Packages
 
-If the module already exists (scaffolded earlier without `--host`, or in general), use `link` instead of regenerating it:
+DnScaffold installs these packages automatically during scaffold:
 
-```bash
-dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBPOS.Api
-```
-
-`--name` and `--location` must match what you originally passed to `dn g m`. This only runs `dotnet add reference` against Presentation/Application/Infrastructure — it never touches Domain, Contracts, or the module's files, and doesn't require a `.sln`.
+| Layer            | Package                                                  |
+|------------------|----------------------------------------------------------|
+| Application      | `FluentValidation`                                       |
+| Application      | `FluentValidation.DependencyInjectionExtensions`         |
+| Application      | `Microsoft.Extensions.DependencyInjection.Abstractions`  |
+| Infrastructure   | `Microsoft.Extensions.DependencyInjection.Abstractions`  |
+| Presentation     | `Microsoft.Extensions.DependencyInjection.Abstractions`  |
+| Presentation     | `FluentValidation`                                       |
 
 ---
 
-## More Examples
+## Host Wiring & Program.cs Patching
 
-```bash
-# Class library, using an existing folder by partial name
-dn g classlib --name MBPOS.Modules.Identity.Presentation --location identity
+When a host project is specified, DnScaffold:
 
-# Full explicit path (no resolution needed)
-dn g classlib --name MBPOS.Modules.Sales.Domain --location src/Modules/Sales
+1. **Adds `ProjectReference`s** from the host `.csproj` to the module's Presentation, Application, and Infrastructure projects.
+2. **Patches the host's `Program.cs`** — appends `.Add{Module}Infrastructure()` and `.Add{Module}Presentation()` into the existing `builder.Services` chains, and adds the required `using` directives.
 
-# New module folder under an existing parent
-dn g classlib --name MBPOS.Modules.Vendors.Domain --location modules/vendors
+If the expected chain shape isn't found in `Program.cs`, it prints the snippet to add manually instead of guessing.
 
-# Explicit entity name (irregular plural)
-dn g m --name MBPOS.Modules.Inventory --location src/Modules --entity InventoryItem
+---
 
-# Preview a module scaffold before creating anything
-dn g m --name MBPOS.Modules.Products --location src/Modules --dry-run
+## Entity Name Singularization
 
-# Web API host project
-dn g webapi --name MBPOS.Api --location host
+The entity name is derived automatically from the module's folder name by singularizing it:
 
-# Point to a specific solution file explicitly
-dn g m --name MBPOS.Modules.Products --location src/Modules --sln MBPOS.slnx
-```
+| Module Folder Name | Entity Name |
+|--------------------|-------------|
+| `Products`         | `Product`   |
+| `Categories`       | `Category`  |
+| `Addresses`        | `Address`   |
+| `Inventory`        | `Inventory` |
+
+For irregular plurals or custom names, an explicit entity override is available.
 
 ---
 
 ## Notes
 
-- If `--location` resolves to an existing folder, `dn` reuses it instead of failing.
-- If the target project (or module) folder already exists, `dn` aborts to avoid overwriting anything.
-- `.sln`/`.slnx` files are auto-detected in the current directory; use `--sln` to override.
-- Run `dn` from your solution root so folder scanning, `.sln` detection, and `--host` resolution all work correctly.
-- The generated `Queries` stub in Infrastructure is a placeholder for read-side query methods (e.g. Dapper or raw SQL) — it doesn't pull in any ORM by default.
-- Always test with `--dry-run` before running for real on an unfamiliar location or module name.
+- **Run from your solution root** — folder scanning, `.sln` detection, and host resolution all depend on the current working directory.
+- **Existing project folders are never overwritten** — if the target module or project folder already exists, DnScaffold aborts to prevent data loss.
+- **Solution files are auto-detected** — `.sln` / `.slnx` files in the current directory are found automatically. A module scaffold requires a solution to register its projects in.
+- **Host wiring is best-effort** — a missing or ambiguous host prints a warning but never blocks the rest of the scaffold.
+- **The Infrastructure `Queries` stub** is a placeholder for read-side query methods (e.g. Dapper or raw SQL) — it does not depend on any ORM out of the box.
+- **Empty folders include a `README.md`** — SDK-style projects don't track empty folders or dot-files like `.gitkeep`, so a plain `README.md` is used instead to make the folder visible in IDEs and version control.
+- **For command-line usage, flags, and examples** — see [`USAGE.md`](USAGE.md).

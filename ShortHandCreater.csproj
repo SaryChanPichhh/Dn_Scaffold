@@ -9,13 +9,12 @@
 	  <ToolCommandName>dn</ToolCommandName>
 	  <PackageOutputPath>./nupkg</PackageOutputPath>
 	  <PackageId>DnScaffold</PackageId>
-	  <Version>1.0.2</Version>
+	  <Version>1.0.4</Version>
 	  <Authors>SaryChanPich</Authors>
 	  <Company>SaryChanPich</Company>
 	  <Description>CLI tool to scaffold .NET class libraries into a folder structure.</Description>
 	  <PackageReleaseNotes>
-		  v1.0.2:
-		  - Added default class to some UseCase And Validation folder
+		  v1.0.4:
 	  </PackageReleaseNotes>
 	  <PackageTags>dotnet-tool;scaffold;cli;codegen</PackageTags>
 	  <RepositoryUrl>https://github.com/SaryChanPichhh/Dn_Scaffold.git</RepositoryUrl>
