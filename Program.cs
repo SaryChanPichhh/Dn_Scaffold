@@ -445,7 +445,7 @@ static void LinkHost(string prefix, string parentLocation, string hostArg, bool 
 // Module scaffold: creates Domain / Application / Infrastructure /
 // Presentation / Contracts class libs + a UnitTests project, laid out
 // with the standard sub-folder structure per layer (Entities,
-// Repositories, Requests/Responses, Persistence, Controllers,
+// Abstractions, Requests/Responses, Persistence, Controllers,
 // DependencyInjection, ...), replaces the default Class1.cs in each
 // with real stub files for the given entity, wires up the standard
 // layer references (Shared.* paths are fixed to {sharedRoot}.Shared.<Layer>,
@@ -488,7 +488,7 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     string testCsProj = Path.Combine(testDir, $"{testName}.csproj");
 
     // Stub files to create per layer: (relative file path within the layer project, content).
-    // Files are placed under the standard sub-folders (Entities, Repositories, Persistence, ...)
+    // Files are placed under the standard sub-folders (Entities, Abstractions, Persistence, ...)
     // rather than the project root. Deletes the default Class1.cs first.
     var model = entity + "Model";
     (string layer, (string file, string content)[] stubs)[] StubPlan() => new[]
@@ -508,19 +508,6 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         }),
         ("Contracts", new[]
         {
-            (Path.Combine("Repositories", $"I{entity}Repository.cs"), $$"""
-                using {{LayerNamespace("Domain")}}.Entities;
-
-                namespace {{LayerNamespace("Contracts")}}.Repositories;
-
-                public interface I{{entity}}Repository
-                {
-                    Task<{{model}}?> GetByIdAsync(Guid id);
-                    Task AddAsync({{model}} entity);
-                    Task UpdateAsync({{model}} entity);
-                    Task DeleteAsync(Guid id);
-                }
-                """),
             (Path.Combine("Requests", $"Create{entity}Request.cs"), $$"""
                 namespace {{LayerNamespace("Contracts")}}.Requests;
 
@@ -553,34 +540,29 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         }),
         ("Application", new[]
         {
-            (Path.Combine("Services", $"{entity}Service.cs"), $$"""
-                using {{LayerNamespace("Contracts")}}.Repositories;
+            (Path.Combine("Abstractions", $"I{entity}Repository.cs"), $$"""
+                using {{LayerNamespace("Domain")}}.Entities;
 
-                namespace {{LayerNamespace("Application")}}.Services;
+                namespace {{LayerNamespace("Application")}}.Abstractions;
 
-                public class {{entity}}Service
+                public interface I{{entity}}Repository
                 {
-                    private readonly I{{entity}}Repository _repository;
-
-                    public {{entity}}Service(I{{entity}}Repository repository)
-                    {
-                        _repository = repository;
-                    }
-
-                    // TODO: implement {{entity}} use-case methods (Create, Update, Get, Delete)
+                    Task<{{model}}?> GetByIdAsync(Guid id);
+                    Task AddAsync({{model}} entity);
+                    Task UpdateAsync({{model}} entity);
+                    Task DeleteAsync(Guid id);
                 }
                 """),
-            (Path.Combine("DependencyInjection", "ApplicationServiceCollectionExtensions.cs"), $$"""
+            (Path.Combine("DependencyInjection", $"{moduleFolderName}ApplicationServiceCollectionExtensions.cs"), $$"""
                 using Microsoft.Extensions.DependencyInjection;
-                using {{LayerNamespace("Application")}}.Services;
 
                 namespace {{LayerNamespace("Application")}}.DependencyInjection;
 
-                public static class ApplicationServiceCollectionExtensions
+                public static class {{moduleFolderName}}ApplicationServiceCollectionExtensions
                 {
                     public static IServiceCollection Add{{moduleFolderName}}Application(this IServiceCollection services)
                     {
-                        services.AddScoped<{{entity}}Service>();
+                        // TODO: register application-layer services
 
                         return services;
                     }
@@ -589,38 +571,14 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         }),
         ("Infrastructure", new[]
         {
-            (Path.Combine("Persistence", $"{entity}DbContext.cs"), $$"""
-                // NOTE: requires the Microsoft.EntityFrameworkCore (+ a provider, e.g. .SqlServer) NuGet package.
-                using Microsoft.EntityFrameworkCore;
-                using {{LayerNamespace("Domain")}}.Entities;
-
-                namespace {{LayerNamespace("Infrastructure")}}.Persistence;
-
-                public class {{entity}}DbContext : DbContext
-                {
-                    public {{entity}}DbContext(DbContextOptions<{{entity}}DbContext> options) : base(options)
-                    {
-                    }
-
-                    public DbSet<{{model}}> {{moduleFolderName}} => Set<{{model}}>();
-                }
-                """),
             (Path.Combine("Persistence", "Repositories", $"{entity}Repository.cs"), $$"""
-                using {{LayerNamespace("Contracts")}}.Repositories;
+                using {{LayerNamespace("Application")}}.Abstractions;
                 using {{LayerNamespace("Domain")}}.Entities;
-                using {{LayerNamespace("Infrastructure")}}.Persistence;
 
                 namespace {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
 
                 public class {{entity}}Repository : I{{entity}}Repository
                 {
-                    private readonly {{entity}}DbContext _dbContext;
-
-                    public {{entity}}Repository({{entity}}DbContext dbContext)
-                    {
-                        _dbContext = dbContext;
-                    }
-
                     public Task<{{model}}?> GetByIdAsync(Guid id)
                         => throw new NotImplementedException();
 
@@ -634,23 +592,25 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                         => throw new NotImplementedException();
                 }
                 """),
-            (Path.Combine("DependencyInjection", "InfrastructureServiceCollectionExtensions.cs"), $$"""
-                using Microsoft.EntityFrameworkCore;
-                using Microsoft.Extensions.Configuration;
+            (Path.Combine("Persistence", "Queries", $"{moduleFolderName}Queries.cs"), $$"""
+                namespace {{LayerNamespace("Infrastructure")}}.Persistence.Queries;
+
+                // TODO: add read-only query methods for {{moduleFolderName}} (e.g. via Dapper or raw SQL)
+                public class {{moduleFolderName}}Queries
+                {
+                }
+                """),
+            (Path.Combine("DependencyInjection", $"{moduleFolderName}InfrastructureServiceCollectionExtensions.cs"), $$"""
                 using Microsoft.Extensions.DependencyInjection;
-                using {{LayerNamespace("Contracts")}}.Repositories;
-                using {{LayerNamespace("Infrastructure")}}.Persistence;
+                using {{LayerNamespace("Application")}}.Abstractions;
                 using {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
 
                 namespace {{LayerNamespace("Infrastructure")}}.DependencyInjection;
 
-                public static class InfrastructureServiceCollectionExtensions
+                public static class {{moduleFolderName}}InfrastructureServiceCollectionExtensions
                 {
-                    public static IServiceCollection Add{{moduleFolderName}}Infrastructure(this IServiceCollection services, IConfiguration configuration)
+                    public static IServiceCollection Add{{moduleFolderName}}Infrastructure(this IServiceCollection services)
                     {
-                        services.AddDbContext<{{entity}}DbContext>(options =>
-                            options.UseSqlServer(configuration.GetConnectionString("{{moduleFolderName}}")));
-
                         services.AddScoped<I{{entity}}Repository, {{entity}}Repository>();
 
                         return services;
@@ -662,7 +622,7 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         {
             (Path.Combine("Controllers", $"{entity}Controller.cs"), $$"""
                 using Microsoft.AspNetCore.Mvc;
-                using {{LayerNamespace("Application")}}.Services;
+                using {{LayerNamespace("Application")}}.Abstractions;
 
                 namespace {{LayerNamespace("Presentation")}}.Controllers;
 
@@ -670,14 +630,34 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                 [Route("api/[controller]")]
                 public class {{entity}}Controller : ControllerBase
                 {
-                    private readonly {{entity}}Service _service;
+                    private readonly I{{entity}}Repository _repository;
 
-                    public {{entity}}Controller({{entity}}Service service)
+                    public {{entity}}Controller(I{{entity}}Repository repository)
                     {
-                        _service = service;
+                        _repository = repository;
                     }
 
                     // TODO: add endpoints (Get, Create, Update, Delete)
+                }
+                """),
+            (Path.Combine("DependencyInjection", $"{moduleFolderName}PresentationServiceCollectionExtensions.cs"), $$"""
+                using Microsoft.Extensions.DependencyInjection;
+                using {{LayerNamespace("Presentation")}}.Controllers;
+
+                namespace {{LayerNamespace("Presentation")}}.DependencyInjection;
+
+                public static class {{moduleFolderName}}PresentationServiceCollectionExtensions
+                {
+                    public static IMvcBuilder Add{{moduleFolderName}}Presentation(
+                        this IMvcBuilder mvcBuilder)
+                    {
+                        ArgumentNullException.ThrowIfNull(mvcBuilder);
+
+                        mvcBuilder.AddApplicationPart(
+                            typeof({{entity}}Controller).Assembly);
+
+                        return mvcBuilder;
+                    }
                 }
                 """)
         })
@@ -687,10 +667,10 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     // on disk to match the standard module layout.
     (string layer, string[] extraDirs)[] ExtraDirPlan() => new[]
     {
-        ("Domain", new[] { "Services", "ValueObjects" }),
-        ("Application", new[] { "Abstractions", "UseCases", "Validation" }),
-        ("Infrastructure", new[] { "Configuration", Path.Combine("Persistence", "Queries"), Path.Combine("Persistence", "Records"), "Services" }),
-        ("Presentation", new[] { "DependencyInjection" }),
+        ("Domain", [ "ValueObjects"]),
+        ("Application", new[] { "UseCases", "Validation" }),
+        ("Infrastructure", new[] { "Configuration", Path.Combine("Persistence", "Records"), "Services" }),
+        ("Presentation", Array.Empty<string>()),
         ("Contracts", Array.Empty<string>())
     };
 
@@ -726,7 +706,6 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         Console.WriteLine($"[WILL CREATE] xunit     {testName}  -> {testDir}");
         Console.WriteLine($"[WILL DELETE]           {Path.Combine(testDir, "UnitTest1.cs")}");
         Console.WriteLine($"[WILL CREATE]           {Path.Combine(testDir, "Controllers", $"{entity}ControllerTests.cs")}");
-        Console.WriteLine($"[WILL CREATE]           {Path.Combine(testDir, "Services", $"{entity}ServiceTests.cs")}");
         Console.WriteLine();
         Console.WriteLine("[WILL WIRE INTERNAL REFERENCES] (always applied)");
         Console.WriteLine($"  Contracts       -> Domain");
@@ -736,7 +715,7 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         Console.WriteLine($"  UnitTests       -> Application, Presentation");
         Console.WriteLine();
         Console.WriteLine("[WILL ADD FRAMEWORK REFERENCE]");
-        Console.WriteLine($"  Presentation    -> Microsoft.AspNetCore.App  (for ControllerBase)");
+        Console.WriteLine($"  Presentation    -> Microsoft.AspNetCore.App  (for ControllerBase / IMvcBuilder)");
         Console.WriteLine();
         if (skipShared)
         {
@@ -860,7 +839,7 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     if (!AddReference(LayerCsProj("Presentation"),
             LayerCsProj("Application"), LayerCsProj("Contracts"))) return;
 
-    // 3a. Presentation needs the ASP.NET Core framework reference for ControllerBase.
+    // 3a. Presentation needs the ASP.NET Core framework reference for ControllerBase / IMvcBuilder.
     string presentationCsproj = LayerCsProj("Presentation");
     if (File.Exists(presentationCsproj))
     {
@@ -924,7 +903,6 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
     File.WriteAllText(controllerTestPath, $$"""
         using Xunit;
         using {{LayerNamespace("Presentation")}}.Controllers;
-        using {{LayerNamespace("Application")}}.Services;
 
         namespace {{testName}}.Controllers;
 
@@ -943,30 +921,6 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
 
         """);
     Console.WriteLine($"  created {controllerTestPath}");
-
-    string serviceTestPath = Path.Combine(testDir, "Services", $"{entity}ServiceTests.cs");
-    Directory.CreateDirectory(Path.GetDirectoryName(serviceTestPath)!);
-    File.WriteAllText(serviceTestPath, $$"""
-        using Xunit;
-        using {{LayerNamespace("Application")}}.Services;
-
-        namespace {{testName}}.Services;
-
-        public class {{entity}}ServiceTests
-        {
-            [Fact]
-            public void {{entity}}Service_Can_Be_Instantiated()
-            {
-                var service = new {{entity}}Service(null!);
-
-                Assert.NotNull(service);
-            }
-
-            // TODO: add real behavioral tests once {{entity}}Service methods are implemented
-        }
-
-        """);
-    Console.WriteLine($"  created {serviceTestPath}");
 
     Console.WriteLine();
     Console.WriteLine("============================================================");
@@ -1109,8 +1063,6 @@ MODULE TYPE (m / module):
     ValueObjects / (empty, reserved for value objects)
 
     MBPOS.Modules.Products.Contracts /
-      Repositories /
-        IProductRepository.cs
       Requests /
         CreateProductRequest.cs
         UpdateProductRequest.cs
@@ -1118,36 +1070,34 @@ MODULE TYPE (m / module):
         ProductResponse.cs
 
     MBPOS.Modules.Products.Application/
-      Services/
-        ProductService.cs
+      Abstractions/
+        IProductRepository.cs
       DependencyInjection/
-        ApplicationServiceCollectionExtensions.cs
-      Abstractions/         (empty)
+        ProductsApplicationServiceCollectionExtensions.cs
       UseCases/              (empty)
       Validation/            (empty)
 
     MBPOS.Modules.Products.Infrastructure/
       Persistence/
-        ProductDbContext.cs
         Repositories/
           ProductRepository.cs
-        Queries/               (empty)
+        Queries/
+          ProductsQueries.cs
         Records/                (empty)
       DependencyInjection/
-        InfrastructureServiceCollectionExtensions.cs
+        ProductsInfrastructureServiceCollectionExtensions.cs
       Configuration/           (empty)
       Services/                 (empty)
 
     MBPOS.Modules.Products.Presentation/
       Controllers/
         ProductController.cs
-      DependencyInjection/       (empty)
+      DependencyInjection/
+        ProductsPresentationServiceCollectionExtensions.cs
 
   plus UnitTests/MBPOS.Modules.Products.UnitTests/
     Controllers/
       ProductControllerTests.cs
-    Services/
-      ProductServiceTests.cs
 
   (Entity name ""Product"" is singularized automatically from ""Products"";
 override with --entity if the automatic singular is wrong, e.g.irregular
@@ -1163,7 +1113,9 @@ plurals like ""Categories"" -> ""Category"" is handled, but exotic cases may
 
   Also adds a FrameworkReference to Microsoft.AspNetCore.App to the Presentation
   layer's csproj, since the generated {Entity}Controller inherits from
-  ControllerBase for ASP.NET Core Web API.
+  ControllerBase, and the generated {ModuleName}PresentationServiceCollectionExtensions
+  exposes an Add{ModuleName}Presentation(this IMvcBuilder) extension that registers
+  the controller's assembly as an application part.
 
   Then wires Shared references as best-effort (skipped with a warning if the
   Shared project isn't found, so a missing Shared project never blocks the
@@ -1217,7 +1169,7 @@ NOTES:
   - The tool auto-detects .sln or .slnx files in the current directory; use--sln to override.
   - Run this tool from your solution root so folder scanning, .sln detection, and --host
     resolution work correctly.
-  - The generated Infrastructure stub files reference Microsoft.EntityFrameworkCore types;
-add the corresponding NuGet package(s) to that project before building.
+  - The generated Infrastructure Queries stub is a placeholder for read-side query methods
+    (e.g. Dapper / raw SQL); it does not depend on any ORM out of the box.
 ");
 }
