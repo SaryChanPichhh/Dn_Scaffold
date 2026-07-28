@@ -501,6 +501,7 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                 public class {{model}}
                 {
                     public Guid Id { get; private set; }
+                    public string Name { get; init; }
 
                     // TODO: add {{model}} properties and domain behavior
                 }
@@ -555,7 +556,10 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                 """),
             (Path.Combine("DependencyInjection", $"{moduleFolderName}ApplicationServiceCollectionExtensions.cs"), $$"""
                 using Microsoft.Extensions.DependencyInjection;
-
+                using FluentValidation;
+                using {{LayerNamespace("Application")}}.Validation;
+                using {{LayerNamespace("Application")}}.UseCases.Create;
+                
                 namespace {{LayerNamespace("Application")}}.DependencyInjection;
 
                 public static class {{moduleFolderName}}ApplicationServiceCollectionExtensions
@@ -563,22 +567,81 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                     public static IServiceCollection Add{{moduleFolderName}}Application(this IServiceCollection services)
                     {
                         // TODO: register application-layer services
-
+                        ArgumentNullException.ThrowIfNull(services);
+                
+                        services.AddValidatorsFromAssemblyContaining<
+                            Create{{moduleFolderName}}Command>();
+                        
+                        services.AddScoped<Create{{moduleFolderName}}Handler>();
                         return services;
                     }
                 }
-                """)
+                """),
+            (Path.Combine("UseCases","Create", $"Create{moduleFolderName}Command.cs"), $$"""
+                  namespace {{LayerNamespace("Application")}}.UseCases.Create;
+
+                  public sealed record Create{{moduleFolderName}}Command
+                  (
+                      Guid Id,
+                      string Name
+                  );
+                  """),
+            (Path.Combine("UseCases","Create", $"Create{moduleFolderName}Handler.cs"), $$"""
+                  using {{LayerNamespace("Application")}}.Abstractions;
+                  namespace {{LayerNamespace("Application")}}.UseCases.Create;
+
+                  public sealed class Create{{moduleFolderName}}Handler
+                  {
+                      private readonly I{{entity}}Repository _repository;
+                      public Create{{moduleFolderName}}Handler(I{{entity}}Repository repository){
+                            _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+                      }
+                  }
+                  """),
+            (Path.Combine("UseCases","Create", $"Create{moduleFolderName}Result.cs"), $$"""
+                  namespace {{LayerNamespace("Application")}}.UseCases.Create;
+                  public abstract record Create{{moduleFolderName}}Result;
+                  """),
+            (Path.Combine("Validation", $"Create{moduleFolderName}CommandValidator.cs"), $$"""
+                  using FluentValidation;
+                  using {{LayerNamespace("Application")}}.UseCases.Create;
+                  namespace {{LayerNamespace("Application")}}.Validation;
+                  public sealed class Create{{moduleFolderName}}CommandValidator
+                  : AbstractValidator<Create{{moduleFolderName}}Command>
+                  {
+                      public Create{{moduleFolderName}}CommandValidator()
+                      {
+                          RuleFor(command => command.Id)
+                          .Must(value => !string.IsNullOrWhiteSpace(value.ToString()))
+                          .WithMessage("Id is required");
+                          
+                          RuleFor(x => x.Name)
+                              .NotNull().WithMessage("Name cannot be null.")
+                              .NotEmpty().WithMessage("Name is required.")
+                              .MaximumLength(100).WithMessage("Name must not exceed 100 characters.");
+                      }
+                  }
+                  """)
         }),
         ("Infrastructure", new[]
         {
             (Path.Combine("Persistence", "Repositories", $"{entity}Repository.cs"), $$"""
                 using {{LayerNamespace("Application")}}.Abstractions;
                 using {{LayerNamespace("Domain")}}.Entities;
-
+                using MBPOS.Shared.Infrastructure.Database;
+                
                 namespace {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
 
                 public class {{entity}}Repository : I{{entity}}Repository
                 {
+                    private readonly ISqlDataAccess _sqlDataAccess;
+                    public {{entity}}Repository(
+                    ISqlDataAccess sqlDataAccess)
+                    {
+                        ArgumentNullException.ThrowIfNull(sqlDataAccess);
+                        _sqlDataAccess = sqlDataAccess;
+                    }
+                    
                     public Task<{{model}}?> GetByIdAsync(Guid id)
                         => throw new NotImplementedException();
 
@@ -592,14 +655,17 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
                         => throw new NotImplementedException();
                 }
                 """),
-            (Path.Combine("Persistence", "Queries", $"{moduleFolderName}Queries.cs"), $$"""
+            (Path.Combine("Persistence", "Queries", $"{moduleFolderName}Queries.cs"), $$""""
                 namespace {{LayerNamespace("Infrastructure")}}.Persistence.Queries;
 
                 // TODO: add read-only query methods for {{moduleFolderName}} (e.g. via Dapper or raw SQL)
-                public class {{moduleFolderName}}Queries
+                internal static class {{moduleFolderName}}Queries
                 {
+                    internal const string Insert{{moduleFolderName}} = """
+                
+                    """;  
                 }
-                """),
+                """"),
             (Path.Combine("DependencyInjection", $"{moduleFolderName}InfrastructureServiceCollectionExtensions.cs"), $$"""
                 using Microsoft.Extensions.DependencyInjection;
                 using {{LayerNamespace("Application")}}.Abstractions;
@@ -620,21 +686,28 @@ static void GenerateModule(string prefix, string parentLocation, string? slnPath
         }),
         ("Presentation", new[]
         {
-            (Path.Combine("Controllers", $"{entity}Controller.cs"), $$"""
+            (Path.Combine("Controllers", $"{entity}Controller.cs"), $$$"""
                 using Microsoft.AspNetCore.Mvc;
-                using {{LayerNamespace("Application")}}.Abstractions;
+                using Microsoft.AspNetCore.Authorization;
+                using System.Diagnostics;
+                using FluentValidation;
+                using {{{LayerNamespace("Application")}}}.UseCases.Create;
 
-                namespace {{LayerNamespace("Presentation")}}.Controllers;
+                namespace {{{LayerNamespace("Presentation")}}}.Controllers;
 
                 [ApiController]
-                [Route("api/[controller]")]
-                public class {{entity}}Controller : ControllerBase
+                [AllowAnonymous]
+                [Route("api/v1/{{{entity}}}")]
+                [Produces("application/json")]
+                public class {{{entity}}}Controller : ControllerBase
                 {
-                    private readonly I{{entity}}Repository _repository;
-
-                    public {{entity}}Controller(I{{entity}}Repository repository)
+                    private readonly Create{{{moduleFolderName}}}Handler _create{{{moduleFolderName}}}Handler;
+                    private readonly IValidator<Create{{{moduleFolderName}}}Command> _create{{{moduleFolderName}}}Validator;
+                    public {{{entity}}}Controller(Create{{{moduleFolderName}}}Handler create{{{moduleFolderName}}}Handler, IValidator<Create{{{moduleFolderName}}}Command> create{{{moduleFolderName}}}Validator)
                     {
-                        _repository = repository;
+                        //TODO : Inject Handle From UseCase
+                        _create{{{moduleFolderName}}}Handler = create{{{moduleFolderName}}}Handler;
+                        _create{{{moduleFolderName}}}Validator = create{{{moduleFolderName}}}Validator;
                     }
 
                     // TODO: add endpoints (Get, Create, Update, Delete)

@@ -12,7 +12,7 @@
     <packageTypes>
       <packageType name="DotnetTool" />
     </packageTypes>
-    <repository type="git" url="https://github.com/SaryChanPichhh/Dn_Scaffold.git" commit="13407386b57a2222a18576ffe8eec3744a74572a" />
+    <repository type="git" url="https://github.com/SaryChanPichhh/Dn_Scaffold.git" commit="68594169ca114de38493a43e5903105ec5e2414f" />
   </metadata>
   <files>
     <file src="D:\BackUp\ShortHandCreater\obj\Release\net10.0\DotnetToolSettings.xml" target="tools\net10.0\any\DotnetToolSettings.xml" />
