@@ -15,7 +15,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("CLI tool to scaffold .NET class libraries into a folder structure.")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.5.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.5+238bf9ab5d33b9620d9fd850a0243f6d7eaeb48b")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.5+e044af0d76f684069b3359a982c54cc774d985ef")]
 [assembly: System.Reflection.AssemblyProductAttribute("ShortHandCreater")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ShortHandCreater")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.5.0")]

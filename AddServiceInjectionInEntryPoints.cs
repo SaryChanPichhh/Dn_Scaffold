@@ -148,15 +148,6 @@ namespace ShortHandCreater
                 return src;
             }
 
-            static int FindFirstOf(string src, string[] needles)
-            {
-                foreach (var n in needles)
-                {
-                    int idx = src.IndexOf(n, StringComparison.Ordinal);
-                    if (idx >= 0) return idx;
-                }
-                return -1;
-            }
 
             static IEnumerable<string> Diff(string before, string after)
             {

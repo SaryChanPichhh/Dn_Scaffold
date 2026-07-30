@@ -513,6 +513,7 @@ internal static class ModuleGenerator
             ("Infrastructure", "Microsoft.Extensions.DependencyInjection.Abstractions"),
             ("Presentation", "Microsoft.Extensions.DependencyInjection.Abstractions"),
             ("Presentation", "FluentValidation"),
+            ("Presentation", "Microsoft.AspNetCore.Http.Abstractions"),
         };
 
         foreach (var (layer, package) in forcedPackages)
