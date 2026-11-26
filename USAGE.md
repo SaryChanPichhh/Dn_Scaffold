@@ -66,6 +66,14 @@ dn link --name MBPOS.Modules.Products --location src/Modules --host src/Host/MBP
 
 Adds `ProjectReference`s from the host `.csproj` to the module's **Presentation**, **Application**, and **Infrastructure** projects. Does not create or modify the module itself.
 
+### 3. `generate usecase` (`g usecase`) — Add a Use Case to an Existing Module
+
+```bash
+dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore
+```
+
+Creates a `GetItemDetailByStore/` folder under the module's `Application/UseCases/` folder with `Command`, `Handler`, `Result`, and `ReadModel` files, then auto-registers the handler in the module's `*ApplicationServiceCollectionExtensions.cs`.
+
 ---
 
 ## 🔧 All Options
@@ -79,6 +87,8 @@ Adds `ProjectReference`s from the host `.csproj` to the module's **Presentation*
 | `--shared-root`       | `-r`  | `module`         | `MBPOS`      | Root prefix for `Shared.*` references                              |
 | `--no-shared`         |       | `module`         | off          | Skip `Shared.*` reference wiring                                   |
 | `--host`              |       | `module`, `link` | *(none)*     | Host `.csproj` path or folder with one `.csproj`                   |
+| `--result-model`      |       | `usecase`        | auto         | Success payload type (defaults to `IReadOnlyList<{Entity}DetailModel>` when it exists, else `IReadOnlyList<{Entity}Model>`) |
+| `--no-validator`      |       | `usecase`        | off          | Skip creating the FluentValidation command validator               |
 | `--dry-run`           |       | all              | off          | Preview changes — nothing is created                               |
 | `--help`              | `-h`  | all              |              | Show help text                                                     |
 
@@ -111,6 +121,7 @@ Special types for `generate` only:
 | Type          | Alias | Description                            |
 |---------------|-------|----------------------------------------|
 | `module`      | `m`   | Full layered module scaffold (5 projects + tests) |
+| `usecase`     |              | Use-case scaffold inside an existing module's Application layer |
 
 ---
 
@@ -126,6 +137,7 @@ src/Modules/Products/
 │   └── ValueObjects/
 │
 ├── MBPOS.Modules.Products.Contracts/
+│   ├── Criteria/
 │   ├── Requests/
 │   │   ├── CreateProductRequest.cs
 │   │   └── UpdateProductRequest.cs
@@ -137,35 +149,49 @@ src/Modules/Products/
 │   │   └── IProductRepository.cs
 │   ├── DependencyInjection/
 │   │   └── ProductsApplicationServiceCollectionExtensions.cs
+│   ├── Option/
+│   │   └── ProductsOptions.cs
+│   ├── Queries/
+│   │   └── GetProductsQuery.cs
 │   ├── UseCases/
-│   │   └── Create/
-│   │       ├── CreateProductsCommand.cs
-│   │       ├── CreateProductsHandler.cs
-│   │       └── CreateProductsResult.cs
+│   │   └── CreateProduct/
+│   │       ├── CreateProductCommand.cs
+│   │       ├── CreateProductHandler.cs
+│   │       ├── CreateProductResult.cs
+│   │       └── CreateProductReadModel.cs
 │   └── Validation/
-│       └── CreateProductsCommandValidator.cs
+│       └── CreateProductCommandValidator.cs
 │
 ├── MBPOS.Modules.Products.Infrastructure/
-│   ├── Persistence/
-│   │   ├── Repositories/
-│   │   │   └── ProductRepository.cs
-│   │   ├── Queries/
-│   │   │   └── ProductsQueries.cs
-│   │   └── Records/
+│   ├── Configuration/
 │   ├── DependencyInjection/
 │   │   └── ProductsInfrastructureServiceCollectionExtensions.cs
-│   ├── Configuration/
+│   ├── Persistence/
+│   │   ├── Mapping/
+│   │   │   └── ProductMapping.cs
+│   │   ├── Queries/
+│   │   │   └── ProductQueries.cs
+│   │   ├── Records/
+│   │   │   └── ProductRow.cs
+│   │   └── Repositories/
+│   │       └── ProductRepository.cs
 │   └── Services/
 │
 ├── MBPOS.Modules.Products.Presentation/
 │   ├── Controllers/
-│   │   └── ProductController.cs
-│   └── DependencyInjection/
-│       └── ProductsPresentationServiceCollectionExtensions.cs
+│   │   └── ProductsController.cs
+│   ├── DependencyInjection/
+│   │   └── ProductsPresentationServiceCollectionExtensions.cs
+│   ├── Mapping/
+│   │   └── ProductMapping.cs
+│   └── Validation/
+│       └── CreateProductRequestValidation.cs
 │
 └── UnitTests/MBPOS.Modules.Products.UnitTests/
-    └── Controllers/
-        └── ProductControllerTests.cs
+    ├── Controllers/
+    │   └── ProductsControllerTests.cs
+    └── UseCases/
+        └── CreateProductHandlerTests.cs
 ```
 
 ### Auto-Wired References
@@ -200,6 +226,60 @@ Infrastructure  → {SharedRoot}.Shared.Infrastructure
 ```
 
 Skipped with a warning if the shared project is not found on disk.
+
+---
+
+## 🧩 Use-Case (Feature) Structure
+
+Running:
+
+```bash
+dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore
+```
+
+creates:
+
+```
+MBPOS.Modules.Item.Application/
+└── UseCases/
+    └── GetItemDetailByStore/
+        ├── GetItemDetailByStoreCommand.cs    (sealed record)
+        ├── GetItemDetailByStoreHandler.cs    (sealed class)
+        └── GetItemDetailByStoreResult.cs     (abstract record)
+```
+
+The `Result` file contains the standard nested records:
+
+```csharp
+public abstract record GetItemDetailByStoreResult
+{
+    public sealed record Success(
+        IReadOnlyList<ItemDetailModel> Items) : GetItemDetailByStoreResult;
+
+    public sealed record ValidationFailed(
+        IReadOnlyDictionary<string, string[]> Errors) : GetItemDetailByStoreResult;
+
+    public sealed record Failed(string Message) : GetItemDetailByStoreResult;
+}
+```
+
+When FluentValidation is referenced by the Application project, a validator is also created at:
+
+```
+MBPOS.Modules.Item.Application/Validation/GetItemDetailByStoreCommandValidator.cs
+```
+
+The handler is auto-registered in `DependencyInjection/*ApplicationServiceCollectionExtensions.cs`:
+
+```csharp
+using MBPOS.Modules.Item.Application.UseCases.GetItemDetailByStore;
+
+// ...
+
+services.AddScoped<GetItemDetailByStoreHandler>();
+```
+
+The location is resolved against the real module layout, so `modules/item/application/usecases/<Prefix>` also finds fully-qualified folders such as `src/Modules/Item/MBPOS.Modules.Item.Application/UseCases`.
 
 ---
 
@@ -293,6 +373,19 @@ dn g m --name MyApp.Modules.Billing --location src/Modules --shared-root MyApp
 
 ```bash
 dn g m --name MBPOS.Modules.Products --location src/Modules --sln MyProject.slnx
+```
+
+### Workflow 9: Add a Use Case to an Existing Module
+
+```bash
+# Preview first
+dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore --dry-run
+
+# Create Command / Handler / Result / ReadModel and auto-register the handler
+dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore
+
+# Custom Success payload and no validator
+dn g usecase --name CreateItemUseCase --location modules/item/application/usecases/CreateItem --result-model "Guid" --no-validator
 ```
 
 ---

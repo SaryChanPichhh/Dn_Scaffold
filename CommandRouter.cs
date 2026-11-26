@@ -72,6 +72,10 @@ internal static class CommandRouter
         bool isModule = string.Equals(projectType, "m", StringComparison.OrdinalIgnoreCase)
                      || string.Equals(projectType, "module", StringComparison.OrdinalIgnoreCase);
 
+        bool isUseCase = string.Equals(projectType, "usecase", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(projectType, "f", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(projectType, "feature", StringComparison.OrdinalIgnoreCase);
+
         bool isDryRun = ArgParser.HasFlag(args, "--dry-run");
         string? nameArg = ArgParser.GetArgValue(args, "--name") ?? ArgParser.GetArgValue(args, "-n");
         string? location = ArgParser.GetArgValue(args, "--location") ?? ArgParser.GetArgValue(args, "-l");
@@ -88,7 +92,7 @@ internal static class CommandRouter
             return;
         }
 
-        if (!isModule && !TemplateValidator.IsValidTemplate(projectType))
+        if (!isModule && !isUseCase && !TemplateValidator.IsValidTemplate(projectType))
         {
             Console.WriteLine($"Error: \"{projectType}\" is not a recognized dotnet template.");
             Console.WriteLine("Run 'dotnet new list' to see all available templates on this machine.");
@@ -115,6 +119,17 @@ internal static class CommandRouter
         if (isModule)
         {
             ModuleGenerator.Run(nameArg, fullLocation, slnPath, sharedRoot, entityFlag, skipShared, hostFlag, isDryRun);
+            return;
+        }
+
+        // ============================================================
+        // USE‑CASE MODE — "dn g usecase --name <Prefix>UseCase --location modules/item/application/usecases/<Prefix>"
+        // ============================================================
+        if (isUseCase)
+        {
+            string? resultModelFlag = ArgParser.GetArgValue(args, "--result-model");
+            bool skipValidator = ArgParser.HasFlag(args, "--no-validator");
+            UseCaseGenerator.Run(nameArg, fullLocation, entityFlag, resultModelFlag, skipValidator, isDryRun);
             return;
         }
 

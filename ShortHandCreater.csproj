@@ -9,13 +9,17 @@
 	  <ToolCommandName>dn</ToolCommandName>
 	  <PackageOutputPath>./nupkg</PackageOutputPath>
 	  <PackageId>DnScaffold</PackageId>
-	  <Version>1.0.5</Version>
+	  <Version>1.0.9</Version>
 	  <Authors>SaryChanPich</Authors>
 	  <Company>SaryChanPich</Company>
 	  <Description>CLI tool to scaffold .NET class libraries into a folder structure.</Description>
 	  <PackageReleaseNotes>
-		  v1.0.5:
-		  - add usage
+		  v1.0.9:
+		  	- modified project's structure by add new folder directories
+		  	- create a command for generate a usecase folder with Command, Handler, Result, and ReadModel files
+		  	- update use-case generation command from feature/f to usecase
+		  	- add folder tab completion for the create-usecase.ps1 Location parameter
+		  	- add auto register for some module 
 	  </PackageReleaseNotes>
 	  <PackageTags>dotnet-tool;scaffold;cli;codegen</PackageTags>
 	  <RepositoryUrl>https://github.com/SaryChanPichhh/Dn_Scaffold.git</RepositoryUrl>
@@ -26,6 +30,12 @@
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 		<None Include="USAGE.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Generated test fixtures / scratch solutions must not be compiled into the CLI. -->
+		<Compile Remove="test-usecase\**\*.cs" />
+		<Compile Remove="UnitTests\**\*.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

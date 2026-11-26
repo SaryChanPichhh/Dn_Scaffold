@@ -38,6 +38,12 @@ m, module Full module scaffold: Domain, Application, Infrastructure,
                     the standard sub-folder structure per layer, with real stub
                     files (not the default Class1.cs) and the standard layer
                     references wired up, all added to your solution.
+    usecase        Use‑case scaffold: creates Command (sealed record),
+                    Handler (sealed class), and Result (abstract record with
+                    Success/ValidationFailed/Failed nested records) inside an
+                    existing module's Application/UseCases/<Prefix>/ folder,
+                    plus an optional CommandValidator. Auto‑registers the new
+                    handler in the module's DI extension file.
     <template>     Any valid dotnet template shortname for a single project:
                     classlib console   webapi   web   mvc   razor
                     blazorwasm blazorserver   worker   xunit   nunit   mstest
@@ -105,14 +111,14 @@ MODULE TYPE (m / module):
 
   Creates, under src/Modules/Products:
 
-    MBPOS.Modules.Products.Domain /
-      Entities /
-        Product.cs
-      Services / (empty, reserved for domain services)
-    ValueObjects / (empty, reserved for value objects)
+    MBPOS.Modules.Products.Domain/
+      Entities/
+        ProductModel.cs
+      ValueObjects/        (empty, reserved for value objects)
 
-    MBPOS.Modules.Products.Contracts /
-      Requests /
+    MBPOS.Modules.Products.Contracts/
+      Criteria/            (empty, reserved for query/filter criteria DTOs)
+      Requests/
         CreateProductRequest.cs
         UpdateProductRequest.cs
       Responses/
@@ -123,30 +129,49 @@ MODULE TYPE (m / module):
         IProductRepository.cs
       DependencyInjection/
         ProductsApplicationServiceCollectionExtensions.cs
-      UseCases/              (empty)
-      Validation/            (empty)
+      Option/
+        ProductsOptions.cs
+      Queries/
+        GetProductsQuery.cs
+      UseCases/
+        CreateProduct/
+          CreateProductCommand.cs
+          CreateProductHandler.cs
+          CreateProductResult.cs
+          CreateProductReadModel.cs
+      Validation/
+        CreateProductCommandValidator.cs
 
     MBPOS.Modules.Products.Infrastructure/
-      Persistence/
-        Repositories/
-          ProductRepository.cs
-        Queries/
-          ProductsQueries.cs
-        Records/                (empty)
+      Configuration/       (empty)
       DependencyInjection/
         ProductsInfrastructureServiceCollectionExtensions.cs
-      Configuration/           (empty)
-      Services/                 (empty)
+      Persistence/
+        Mapping/
+          ProductMapping.cs
+        Queries/
+          ProductQueries.cs
+        Records/
+          ProductRow.cs
+        Repositories/
+          ProductRepository.cs
+      Services/            (empty, reserved for external/storage services)
 
     MBPOS.Modules.Products.Presentation/
       Controllers/
-        ProductController.cs
+        ProductsController.cs
       DependencyInjection/
         ProductsPresentationServiceCollectionExtensions.cs
+      Mapping/
+        ProductMapping.cs
+      Validation/
+        CreateProductRequestValidation.cs
 
   plus UnitTests/MBPOS.Modules.Products.UnitTests/
     Controllers/
-      ProductControllerTests.cs
+      ProductsControllerTests.cs
+    UseCases/
+      CreateProductHandlerTests.cs
 
   (Entity name ""Product"" is singularized automatically from ""Products"";
 override with --entity if the automatic singular is wrong, e.g.irregular
@@ -161,7 +186,7 @@ plurals like ""Categories"" -> ""Category"" is handled, but exotic cases may
     UnitTests       -> Application, Presentation
 
   Also adds a FrameworkReference to Microsoft.AspNetCore.App to the Presentation
-  layer's csproj, since the generated {Entity}Controller inherits from
+  layer's csproj, since the generated {Module}Controller inherits from
   ControllerBase, and the generated {ModuleName}PresentationServiceCollectionExtensions
   exposes an Add{ModuleName}Presentation(this IMvcBuilder) extension that registers
   the controller's assembly as an application part.
@@ -206,6 +231,18 @@ EXAMPLES:
   Preview a module scaffold before creating anything:
     dn g m--name MBPOS.Modules.Products --location src/Modules --dry-run
 
+  Use‑case scaffold (adds Command/Handler/Result/ReadModel + auto‑registers):
+    dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore
+
+  Use‑case with custom result model type:
+    dn g usecase --name CreateProductUseCase --location modules/products/application/usecases/CreateProduct --result-model ""Guid""
+
+  Use‑case without a validator:
+    dn g usecase --name DeleteItemUseCase --location modules/item/application/usecases/DeleteItem --no-validator
+
+  Preview a use‑case scaffold:
+    dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore --dry-run
+
   Web API host:
     dn g webapi--name MBPOS.Api --location host
 
@@ -220,6 +257,42 @@ NOTES:
     resolution work correctly.
   - The generated Infrastructure Queries stub is a placeholder for read-side query methods
     (e.g. Dapper / raw SQL); it does not depend on any ORM out of the box.
+
+USE-CASE TYPE (usecase):
+
+  dn g usecase --name GetItemDetailByStoreUseCase --location modules/item/application/usecases/GetItemDetailByStore
+
+  Creates, inside the module's Application/UseCases/<Prefix>/ folder:
+    GetItemDetailByStore/
+      GetItemDetailByStoreCommand.cs    (sealed record)
+      GetItemDetailByStoreHandler.cs    (sealed class)
+      GetItemDetailByStoreResult.cs     (abstract record + nested Success / ValidationFailed / Failed)
+
+  The --location is resolved against the real module layout, so fully-qualified
+  folders such as src/Modules/Item/MBPOS.Modules.Item.Application/UseCases are
+  found automatically even when you type modules/item/application/usecases/<Prefix>.
+
+  Optionally creates (unless --no-validator or FluentValidation is not referenced):
+    Application/Validation/GetItemDetailByStoreCommandValidator.cs
+
+  Auto-registration:
+    Adds 'services.AddScoped<GetItemDetailByStoreHandler>();' into the module's
+    *ApplicationServiceCollectionExtensions.cs and adds the required using directive.
+    If the DI file has no AddValidatorsFromAssemblyContaining<...>() scan, the
+    validator is registered explicitly as well.
+
+  Options:
+    --result-model  (optional)  Type for the Success record's payload.
+                                 Defaults to ""IReadOnlyList<{Entity}DetailModel>"" when
+                                 that type exists in the module, otherwise
+                                 ""IReadOnlyList<{Entity}Model>"".
+                                 Example: --result-model ""Guid"" for a create use-case.
+    --no-validator  (optional)  Skip creating the CommandValidator file.
+    -e, --entity    (optional)  Override the entity name (derived from module name by default).
+    --dry-run       (optional)  Preview what would happen without creating anything.
+
+  The --name argument should end in ""UseCase"" (e.g. ""GetItemDetailByStoreUseCase"");
+  the suffix is stripped to derive the prefix for file and class names.
 ");
     }
 }

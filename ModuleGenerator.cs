@@ -3,10 +3,8 @@ namespace ShortHandCreater;
 // ============================================================
 // Module scaffold: creates Domain / Application / Infrastructure /
 // Presentation / Contracts class libs + a UnitTests project, laid out
-// with the standard sub-folder structure per layer (Entities,
-// Abstractions, Requests/Responses, Persistence, Controllers,
-// DependencyInjection, ...), replaces the default Class1.cs in each
-// with real stub files for the given entity, wires up the standard
+// with the standard sub-folder structure per layer, replaces the default
+// Class1.cs in each with real starter files, wires up the standard
 // layer references (Shared.* paths are fixed to {sharedRoot}.Shared.<Layer>,
 // not derived from --name), optionally wires the module's Presentation /
 // Application / Infrastructure projects into a host/entry-point project
@@ -16,13 +14,59 @@ namespace ShortHandCreater;
 //   moduleFolderName  e.g. "Products"       (derived: last segment of prefix)
 //   moduleRoot        e.g. "{location}/Products"
 //   entity            e.g. "Product"        (derived: singularized moduleFolderName, or --entity)
+//   entities          e.g. "Products"       (derived: pluralized entity)
+//   useCaseName       e.g. "CreateProduct"  (derived: Create{entity})
 // ============================================================
 internal static class ModuleGenerator
 {
-    internal static void Run(string prefix, string parentLocation, string? slnPath, string sharedRoot, string? entityOverride, bool skipShared, string? hostArg, bool isDryRun)
-    {
-        string[] layers = { "Domain", "Application", "Infrastructure", "Presentation", "Contracts" };
+    private static readonly string[] Layers =
+        { "Domain", "Application", "Infrastructure", "Presentation", "Contracts" };
 
+    private static readonly (string Layer, string Package)[] ForcedPackages =
+    {
+        ("Application", "FluentValidation"),
+        ("Application", "Microsoft.Extensions.DependencyInjection.Abstractions"),
+        ("Application", "FluentValidation.DependencyInjectionExtensions"),
+        ("Infrastructure", "Microsoft.Extensions.DependencyInjection.Abstractions"),
+        ("Presentation", "Microsoft.Extensions.DependencyInjection.Abstractions"),
+        ("Presentation", "FluentValidation"),
+        ("Presentation", "Microsoft.AspNetCore.Http.Abstractions"),
+    };
+
+    private sealed record StubFile(string RelativePath, string Content);
+
+    private sealed record ModuleContext(
+        string Prefix,
+        string ModuleName,
+        string Entity,
+        string Entities,
+        string Model,
+        string UseCaseName,
+        string UseCaseCamel,
+        string ModuleRoot,
+        string SharedRoot,
+        bool SkipShared,
+        bool HasSharedInfrastructure,
+        string TestName,
+        string TestDir,
+        string TestCsProj)
+    {
+        public string LayerDir(string layer) => Path.Combine(ModuleRoot, $"{Prefix}.{layer}");
+        public string LayerCsProj(string layer) => Path.Combine(LayerDir(layer), $"{Prefix}.{layer}.csproj");
+        public string LayerNamespace(string layer) => $"{Prefix}.{layer}";
+        public string SharedCsProj(string layer) => GetSharedCsProjPath(SharedRoot, layer);
+    }
+
+    internal static void Run(
+        string prefix,
+        string parentLocation,
+        string? slnPath,
+        string sharedRoot,
+        string? entityOverride,
+        bool skipShared,
+        string? hostArg,
+        bool isDryRun)
+    {
         var segments = prefix.Split('.', StringSplitOptions.RemoveEmptyEntries);
         if (segments.Length < 1)
         {
@@ -30,286 +74,37 @@ internal static class ModuleGenerator
             return;
         }
 
-        string moduleFolderName = segments[^1];                          // e.g. Products
-        string entity = entityOverride ?? StringUtils.Singularize(moduleFolderName); // e.g. Product
-        string moduleRoot = Path.Combine(parentLocation, moduleFolderName);
-
-        string LayerDir(string layer) => Path.Combine(moduleRoot, $"{prefix}.{layer}");
-        string LayerCsProj(string layer) => Path.Combine(LayerDir(layer), $"{prefix}.{layer}.csproj");
-        string LayerNamespace(string layer) => $"{prefix}.{layer}";
-
-        // Fixed shared-project convention: {sharedRoot}.Shared.<Layer> under src/Shared.
-        // Not derived from --name, so a mistyped module prefix can't point references
-        // at the wrong shared projects.
-        string SharedCsProj(string layer) =>
-            Path.Combine("src", "Shared", $"{sharedRoot}.Shared.{layer}", $"{sharedRoot}.Shared.{layer}.csproj");
-
+        string moduleName = segments[^1];
+        string entity = entityOverride ?? StringUtils.Singularize(moduleName);
+        string entities = StringUtils.Pluralize(entity);
+        string useCaseName = $"Create{entity}";
+        string sharedInfraCsproj = GetSharedCsProjPath(sharedRoot, "Infrastructure");
         string testName = $"{prefix}.UnitTests";
         string testDir = Path.Combine("UnitTests", testName);
-        string testCsProj = Path.Combine(testDir, $"{testName}.csproj");
 
-        var model = entity + "Model";
+        var ctx = new ModuleContext(
+            Prefix: prefix,
+            ModuleName: moduleName,
+            Entity: entity,
+            Entities: entities,
+            Model: $"{entity}Model",
+            UseCaseName: useCaseName,
+            UseCaseCamel: StringUtils.ToCamelCase(useCaseName),
+            ModuleRoot: Path.Combine(parentLocation, moduleName),
+            SharedRoot: sharedRoot,
+            SkipShared: skipShared,
+            HasSharedInfrastructure: !skipShared && File.Exists(sharedInfraCsproj),
+            TestName: testName,
+            TestDir: testDir,
+            TestCsProj: Path.Combine(testDir, $"{testName}.csproj"));
 
-        // Stub files to create per layer: (relative file path within the layer project, content).
-        // Files are placed under the standard sub-folders (Entities, Abstractions, Persistence, ...)
-        // rather than the project root. Deletes the default Class1.cs first.
-        (string layer, (string file, string content)[] stubs)[] StubPlan() => new[]
-        {
-            ("Domain", new[]
-            {
-                (Path.Combine("Entities", $"{model}.cs"), $$"""
-                    namespace {{LayerNamespace("Domain")}}.Entities;
+        var stubPlan = BuildStubPlan(ctx);
+        var extraDirPlan = BuildExtraDirPlan();
+        var unitTestFiles = BuildUnitTestFiles(ctx);
 
-                    public class {{model}}
-                    {
-                        public Guid Id { get; private set; }
-                        public string Name { get; init; }
-
-                        // TODO: add {{model}} properties and domain behavior
-                    }
-                    """)
-            }),
-            ("Contracts", new[]
-            {
-                (Path.Combine("Requests", $"Create{entity}Request.cs"), $$"""
-                    namespace {{LayerNamespace("Contracts")}}.Requests;
-
-                    public class Create{{entity}}Request
-                    {
-                        // TODO: add fields required to create a {{entity}}
-                    }
-                    """),
-                (Path.Combine("Requests", $"Update{entity}Request.cs"), $$"""
-                    namespace {{LayerNamespace("Contracts")}}.Requests;
-
-                    public class Update{{entity}}Request
-                    {
-                        public Guid Id { get; set; }
-
-                        // TODO: add fields that can be updated on a {{entity}}
-                    }
-                    """),
-                (Path.Combine("Responses", $"{entity}Response.cs"), $$"""
-                    namespace {{LayerNamespace("Contracts")}}.Responses;
-
-                    // Returned when fetching, creating, or updating a {{entity}}
-                    public class {{entity}}Response
-                    {
-                        public Guid Id { get; set; }
-
-                        // TODO: add {{entity}} fields returned to callers
-                    }
-                    """)
-            }),
-            ("Application", new[]
-            {
-                (Path.Combine("Abstractions", $"I{entity}Repository.cs"), $$"""
-                    using {{LayerNamespace("Domain")}}.Entities;
-
-                    namespace {{LayerNamespace("Application")}}.Abstractions;
-
-                    public interface I{{entity}}Repository
-                    {
-                        Task<{{model}}?> GetByIdAsync(Guid id);
-                        Task AddAsync({{model}} entity);
-                        Task UpdateAsync({{model}} entity);
-                        Task DeleteAsync(Guid id);
-                    }
-                    """),
-                (Path.Combine("DependencyInjection", $"{moduleFolderName}ApplicationServiceCollectionExtensions.cs"), $$"""
-                    using Microsoft.Extensions.DependencyInjection;
-                    using FluentValidation;
-                    using {{LayerNamespace("Application")}}.Validation;
-                    using {{LayerNamespace("Application")}}.UseCases.Create;
-                    
-                    namespace {{LayerNamespace("Application")}}.DependencyInjection;
-
-                    public static class {{moduleFolderName}}ApplicationServiceCollectionExtensions
-                    {
-                        public static IServiceCollection Add{{moduleFolderName}}Application(this IServiceCollection services)
-                        {
-                            // TODO: register application-layer services
-                            ArgumentNullException.ThrowIfNull(services);
-                    
-                            services.AddValidatorsFromAssemblyContaining<
-                                Create{{moduleFolderName}}Command>();
-                            
-                            services.AddScoped<Create{{moduleFolderName}}Handler>();
-                            return services;
-                        }
-                    }
-                    """),
-                (Path.Combine("UseCases","Create", $"Create{moduleFolderName}Command.cs"), $$"""
-                      namespace {{LayerNamespace("Application")}}.UseCases.Create;
-
-                      public sealed record Create{{moduleFolderName}}Command
-                      (
-                          Guid Id,
-                          string Name
-                      );
-                      """),
-                (Path.Combine("UseCases","Create", $"Create{moduleFolderName}Handler.cs"), $$"""
-                      using {{LayerNamespace("Application")}}.Abstractions;
-                      namespace {{LayerNamespace("Application")}}.UseCases.Create;
-
-                      public sealed class Create{{moduleFolderName}}Handler
-                      {
-                          private readonly I{{entity}}Repository _repository;
-                          public Create{{moduleFolderName}}Handler(I{{entity}}Repository repository){
-                                _repository = repository ?? throw new ArgumentNullException(nameof(repository));
-                          }
-                      }
-                      """),
-                (Path.Combine("UseCases","Create", $"Create{moduleFolderName}Result.cs"), $$"""
-                      namespace {{LayerNamespace("Application")}}.UseCases.Create;
-                      public abstract record Create{{moduleFolderName}}Result;
-                      """),
-                (Path.Combine("Validation", $"Create{moduleFolderName}CommandValidator.cs"), $$"""
-                      using FluentValidation;
-                      using {{LayerNamespace("Application")}}.UseCases.Create;
-                      namespace {{LayerNamespace("Application")}}.Validation;
-                      public sealed class Create{{moduleFolderName}}CommandValidator
-                      : AbstractValidator<Create{{moduleFolderName}}Command>
-                      {
-                          public Create{{moduleFolderName}}CommandValidator()
-                          {
-                              RuleFor(command => command.Id)
-                              .Must(value => !string.IsNullOrWhiteSpace(value.ToString()))
-                              .WithMessage("Id is required");
-                              
-                              RuleFor(x => x.Name)
-                                  .NotNull().WithMessage("Name cannot be null.")
-                                  .NotEmpty().WithMessage("Name is required.")
-                                  .MaximumLength(100).WithMessage("Name must not exceed 100 characters.");
-                          }
-                      }
-                      """)
-            }),
-            ("Infrastructure", new[]
-            {
-                (Path.Combine("Persistence", "Repositories", $"{entity}Repository.cs"), $$"""
-                    using {{LayerNamespace("Application")}}.Abstractions;
-                    using {{LayerNamespace("Domain")}}.Entities;
-                    using MBPOS.Shared.Infrastructure.Database;
-                    
-                    namespace {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
-
-                    public class {{entity}}Repository : I{{entity}}Repository
-                    {
-                        private readonly ISqlDataAccess _sqlDataAccess;
-                        public {{entity}}Repository(
-                        ISqlDataAccess sqlDataAccess)
-                        {
-                            ArgumentNullException.ThrowIfNull(sqlDataAccess);
-                            _sqlDataAccess = sqlDataAccess;
-                        }
-                        
-                        public Task<{{model}}?> GetByIdAsync(Guid id)
-                            => throw new NotImplementedException();
-
-                        public Task AddAsync({{model}} entity)
-                            => throw new NotImplementedException();
-
-                        public Task UpdateAsync({{model}} entity)
-                            => throw new NotImplementedException();
-
-                        public Task DeleteAsync(Guid id)
-                            => throw new NotImplementedException();
-                    }
-                    """),
-                (Path.Combine("Persistence", "Queries", $"{moduleFolderName}Queries.cs"), $$""""
-                    namespace {{LayerNamespace("Infrastructure")}}.Persistence.Queries;
-
-                    // TODO: add read-only query methods for {{moduleFolderName}} (e.g. via Dapper or raw SQL)
-                    internal static class {{moduleFolderName}}Queries
-                    {
-                        internal const string Insert{{moduleFolderName}} = """
-                    
-                        """;  
-                    }
-                    """"),
-                (Path.Combine("DependencyInjection", $"{moduleFolderName}InfrastructureServiceCollectionExtensions.cs"), $$"""
-                    using Microsoft.Extensions.DependencyInjection;
-                    using {{LayerNamespace("Application")}}.Abstractions;
-                    using {{LayerNamespace("Infrastructure")}}.Persistence.Repositories;
-
-                    namespace {{LayerNamespace("Infrastructure")}}.DependencyInjection;
-
-                    public static class {{moduleFolderName}}InfrastructureServiceCollectionExtensions
-                    {
-                        public static IServiceCollection Add{{moduleFolderName}}Infrastructure(this IServiceCollection services)
-                        {
-                            services.AddScoped<I{{entity}}Repository, {{entity}}Repository>();
-
-                            return services;
-                        }
-                    }
-                    """)
-            }),
-            ("Presentation", new[]
-            {
-                (Path.Combine("Controllers", $"{entity}Controller.cs"), $$$"""
-                    using Microsoft.AspNetCore.Mvc;
-                    using Microsoft.AspNetCore.Authorization;
-                    using System.Diagnostics;
-                    using FluentValidation;
-                    using {{{LayerNamespace("Application")}}}.UseCases.Create;
-
-                    namespace {{{LayerNamespace("Presentation")}}}.Controllers;
-
-                    [ApiController]
-                    [AllowAnonymous]
-                    [Route("api/v1/{{{entity}}}")]
-                    [Produces("application/json")]
-                    public class {{{entity}}}Controller : ControllerBase
-                    {
-                        private readonly Create{{{moduleFolderName}}}Handler _create{{{moduleFolderName}}}Handler;
-                        private readonly IValidator<Create{{{moduleFolderName}}}Command> _create{{{moduleFolderName}}}Validator;
-                        public {{{entity}}}Controller(Create{{{moduleFolderName}}}Handler create{{{moduleFolderName}}}Handler, IValidator<Create{{{moduleFolderName}}}Command> create{{{moduleFolderName}}}Validator)
-                        {
-                            //TODO : Inject Handle From UseCase
-                            _create{{{moduleFolderName}}}Handler = create{{{moduleFolderName}}}Handler;
-                            _create{{{moduleFolderName}}}Validator = create{{{moduleFolderName}}}Validator;
-                        }
-
-                        // TODO: add endpoints (Get, Create, Update, Delete)
-                    }
-                    """),
-                (Path.Combine("DependencyInjection", $"{moduleFolderName}PresentationServiceCollectionExtensions.cs"), $$"""
-                    using Microsoft.Extensions.DependencyInjection;
-                    using {{LayerNamespace("Presentation")}}.Controllers;
-
-                    namespace {{LayerNamespace("Presentation")}}.DependencyInjection;
-
-                    public static class {{moduleFolderName}}PresentationServiceCollectionExtensions
-                    {
-                        public static IMvcBuilder Add{{moduleFolderName}}Presentation(
-                            this IMvcBuilder mvcBuilder)
-                        {
-                            ArgumentNullException.ThrowIfNull(mvcBuilder);
-
-                            mvcBuilder.AddApplicationPart(
-                                typeof({{entity}}Controller).Assembly);
-
-                            return mvcBuilder;
-                        }
-                    }
-                    """)
-            })
-        };
-
-        // Empty sub-folders that don't get a stub file yet but should still exist
-        // on disk to match the standard module layout.
-        (string layer, string[] extraDirs)[] ExtraDirPlan() => new[]
-        {
-            ("Domain", [ "ValueObjects"]),
-            ("Application", new[] { "UseCases", "Validation" }),
-            ("Infrastructure", new[] { "Configuration", Path.Combine("Persistence", "Records"), "Services" }),
-            ("Presentation", Array.Empty<string>()),
-            ("Contracts", Array.Empty<string>())
-        };
-
-        string? hostCsproj = hostArg != null ? HostResolver.ResolveHostCsproj(hostArg, Directory.GetCurrentDirectory()) : null;
+        string? hostCsproj = hostArg != null
+            ? HostResolver.ResolveHostCsproj(hostArg, Directory.GetCurrentDirectory())
+            : null;
         if (hostArg != null && hostCsproj == null && !isDryRun)
         {
             Console.WriteLine("Continuing without host wiring.");
@@ -317,15 +112,19 @@ internal static class ModuleGenerator
 
         if (isDryRun)
         {
-            PrintDryRun(prefix, moduleRoot, model, entityOverride, moduleFolderName, sharedRoot,
-                        slnPath, hostArg, hostCsproj, skipShared, testName, testDir, entity,
-                        StubPlan, ExtraDirPlan, LayerDir, LayerCsProj, SharedCsProj);
+            PrintDryRun(ctx, entityOverride, slnPath, hostArg, hostCsproj, stubPlan, extraDirPlan, unitTestFiles);
             return;
         }
 
-        if (Directory.Exists(moduleRoot))
+        if (Directory.Exists(ctx.ModuleRoot))
         {
-            Console.WriteLine($"Error: module folder already exists: \"{moduleRoot}\". Aborting to avoid overwrite.");
+            Console.WriteLine($"Error: module folder already exists: \"{ctx.ModuleRoot}\". Aborting to avoid overwrite.");
+            return;
+        }
+
+        if (Directory.Exists(ctx.TestDir))
+        {
+            Console.WriteLine($"Error: unit test folder already exists: \"{ctx.TestDir}\". Aborting to avoid overwrite.");
             return;
         }
 
@@ -335,24 +134,567 @@ internal static class ModuleGenerator
             return;
         }
 
-        Directory.CreateDirectory(moduleRoot);
-        Console.WriteLine($"Created module root: {moduleRoot}");
-        Console.WriteLine($"Entity name: {entity}");
+        Directory.CreateDirectory(ctx.ModuleRoot);
+        Console.WriteLine($"Created module root: {ctx.ModuleRoot}");
+        Console.WriteLine($"Entity name: {ctx.Entity}");
 
-        // 1. Create each layer's class library, strip the default Class1.cs, add stub files,
-        //    and create the standard (currently empty) sub-folders for that layer.
-        var stubPlanReal = StubPlan();
-        var extraDirPlanReal = ExtraDirPlan();
+        if (!CreateLayerProjects(ctx, slnPath, stubPlan, extraDirPlan)) return;
+        if (!WireProjectReferences(ctx)) return;
+        if (!CreateUnitTestProject(ctx, slnPath, unitTestFiles)) return;
 
-        foreach (var (layer, stubs) in stubPlanReal)
+        InstallForcedPackages(ctx);
+        WireHostProject(ctx, hostArg, hostCsproj, isDryRun);
+
+        Console.WriteLine();
+        Console.WriteLine("============================================================");
+        Console.WriteLine($" Module \"{ctx.ModuleName}\" ({ctx.Prefix}) scaffolded successfully.");
+        Console.WriteLine("============================================================");
+    }
+
+    // ----- stub & folder plans -----
+
+    private static (string Layer, StubFile[] Stubs)[] BuildStubPlan(ModuleContext ctx) =>
+    [
+        ("Domain", BuildDomainStubs(ctx)),
+        ("Contracts", BuildContractsStubs(ctx)),
+        ("Application", BuildApplicationStubs(ctx)),
+        ("Infrastructure", BuildInfrastructureStubs(ctx)),
+        ("Presentation", BuildPresentationStubs(ctx)),
+    ];
+
+    private static StubFile[] BuildDomainStubs(ModuleContext ctx) =>
+    [
+        new(Path.Combine("Entities", $"{ctx.Model}.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Domain")}}.Entities;
+
+            public class {{ctx.Model}}
+            {
+                public Guid Id { get; private set; }
+                public string Name { get; init; } = string.Empty;
+
+                // TODO: add {{ctx.Model}} properties and domain behavior
+            }
+            """)
+    ];
+
+    private static StubFile[] BuildContractsStubs(ModuleContext ctx) =>
+    [
+        new(Path.Combine("Requests", $"Create{ctx.Entity}Request.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Contracts")}}.Requests;
+
+            public class Create{{ctx.Entity}}Request
+            {
+                public string Name { get; set; } = string.Empty;
+
+                // TODO: add fields required to create a {{ctx.Entity}}
+            }
+            """),
+        new(Path.Combine("Requests", $"Update{ctx.Entity}Request.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Contracts")}}.Requests;
+
+            public class Update{{ctx.Entity}}Request
+            {
+                public Guid Id { get; set; }
+                public string Name { get; set; } = string.Empty;
+
+                // TODO: add fields that can be updated on a {{ctx.Entity}}
+            }
+            """),
+        new(Path.Combine("Responses", $"{ctx.Entity}Response.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Contracts")}}.Responses;
+
+            // Returned when fetching, creating, or updating a {{ctx.Entity}}
+            public class {{ctx.Entity}}Response
+            {
+                public Guid Id { get; set; }
+                public string Name { get; set; } = string.Empty;
+
+                // TODO: add {{ctx.Entity}} fields returned to callers
+            }
+            """)
+    ];
+
+    private static StubFile[] BuildApplicationStubs(ModuleContext ctx) =>
+    [
+        new(Path.Combine("Abstractions", $"I{ctx.Entity}Repository.cs"), $$"""
+            using {{ctx.LayerNamespace("Domain")}}.Entities;
+
+            namespace {{ctx.LayerNamespace("Application")}}.Abstractions;
+
+            public interface I{{ctx.Entity}}Repository
+            {
+                Task<{{ctx.Model}}?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
+                Task AddAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default);
+                Task UpdateAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default);
+                Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+            }
+            """),
+        new(Path.Combine("DependencyInjection", $"{ctx.ModuleName}ApplicationServiceCollectionExtensions.cs"), $$"""
+            using FluentValidation;
+            using Microsoft.Extensions.DependencyInjection;
+            using {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+            using {{ctx.LayerNamespace("Application")}}.Validation;
+
+            namespace {{ctx.LayerNamespace("Application")}}.DependencyInjection;
+
+            public static class {{ctx.ModuleName}}ApplicationServiceCollectionExtensions
+            {
+                public static IServiceCollection Add{{ctx.ModuleName}}Application(this IServiceCollection services)
+                {
+                    ArgumentNullException.ThrowIfNull(services);
+
+                    services.AddValidatorsFromAssemblyContaining<{{ctx.UseCaseName}}CommandValidator>();
+                    services.AddScoped<{{ctx.UseCaseName}}Handler>();
+
+                    // TODO: register additional application-layer services and handlers
+
+                    return services;
+                }
+            }
+            """),
+        new(Path.Combine("Option", $"{ctx.ModuleName}Options.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Application")}}.Option;
+
+            public sealed class {{ctx.ModuleName}}Options
+            {
+                public const string SectionName = "{{ctx.ModuleName}}";
+
+                // TODO: add {{ctx.ModuleName}} module configuration options
+            }
+            """),
+        new(Path.Combine("Queries", $"Get{ctx.Entities}Query.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Application")}}.Queries;
+
+            public sealed record Get{{ctx.Entities}}Query
+            {
+                // TODO: add filter and pagination parameters for querying {{ctx.Entities}}
+            }
+            """),
+        new(Path.Combine("UseCases", ctx.UseCaseName, $"{ctx.UseCaseName}Command.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+
+            public sealed record {{ctx.UseCaseName}}Command(
+                Guid Id,
+                string Name
+            );
+            """),
+        new(Path.Combine("UseCases", ctx.UseCaseName, $"{ctx.UseCaseName}Handler.cs"), $$"""
+            using {{ctx.LayerNamespace("Application")}}.Abstractions;
+
+            namespace {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+
+            public sealed class {{ctx.UseCaseName}}Handler
+            {
+                private readonly I{{ctx.Entity}}Repository _repository;
+
+                public {{ctx.UseCaseName}}Handler(I{{ctx.Entity}}Repository repository)
+                {
+                    _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+                }
+
+                public async Task<{{ctx.UseCaseName}}Result> HandleAsync(
+                    {{ctx.UseCaseName}}Command command,
+                    CancellationToken cancellationToken = default)
+                {
+                    ArgumentNullException.ThrowIfNull(command);
+
+                    // TODO: implement {{ctx.UseCaseName}} use case logic using _repository
+                    await Task.CompletedTask;
+                    return new {{ctx.UseCaseName}}Result.Created(command.Id);
+                }
+            }
+            """),
+        new(Path.Combine("UseCases", ctx.UseCaseName, $"{ctx.UseCaseName}Result.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+
+            public abstract record {{ctx.UseCaseName}}Result
+            {
+                public sealed record Created(Guid Id) : {{ctx.UseCaseName}}Result;
+                public sealed record ValidationFailed(IReadOnlyDictionary<string, string[]> Errors) : {{ctx.UseCaseName}}Result;
+            }
+            """),
+        new(Path.Combine("UseCases", ctx.UseCaseName, $"{ctx.UseCaseName}ReadModel.cs"), $$"""
+            namespace {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+
+            public sealed record {{ctx.UseCaseName}}ReadModel(
+                Guid Id,
+                string Name
+            );
+            """),
+        new(Path.Combine("Validation", $"{ctx.UseCaseName}CommandValidator.cs"), $$"""
+            using FluentValidation;
+            using {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+
+            namespace {{ctx.LayerNamespace("Application")}}.Validation;
+
+            public sealed class {{ctx.UseCaseName}}CommandValidator
+                : AbstractValidator<{{ctx.UseCaseName}}Command>
+            {
+                public {{ctx.UseCaseName}}CommandValidator()
+                {
+                    RuleFor(command => command.Id)
+                        .NotEmpty()
+                        .WithMessage("Id is required.");
+
+                    RuleFor(command => command.Name)
+                        .NotEmpty().WithMessage("Name is required.")
+                        .MaximumLength(100).WithMessage("Name must not exceed 100 characters.");
+                }
+            }
+            """)
+    ];
+
+    private static StubFile[] BuildInfrastructureStubs(ModuleContext ctx)
+    {
+        string repositoryContent = ctx.HasSharedInfrastructure
+            ? $$"""
+                using {{ctx.LayerNamespace("Application")}}.Abstractions;
+                using {{ctx.LayerNamespace("Domain")}}.Entities;
+                using {{ctx.SharedRoot}}.Shared.Infrastructure.Database;
+
+                namespace {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Repositories;
+
+                public class {{ctx.Entity}}Repository : I{{ctx.Entity}}Repository
+                {
+                    private readonly ISqlDataAccess _sqlDataAccess;
+
+                    public {{ctx.Entity}}Repository(ISqlDataAccess sqlDataAccess)
+                    {
+                        ArgumentNullException.ThrowIfNull(sqlDataAccess);
+                        _sqlDataAccess = sqlDataAccess;
+                    }
+
+                    public Task<{{ctx.Model}}?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+
+                    public Task AddAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+
+                    public Task UpdateAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+
+                    public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+                }
+                """
+            : $$"""
+                using {{ctx.LayerNamespace("Application")}}.Abstractions;
+                using {{ctx.LayerNamespace("Domain")}}.Entities;
+
+                namespace {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Repositories;
+
+                public class {{ctx.Entity}}Repository : I{{ctx.Entity}}Repository
+                {
+                    // TODO: inject ISqlDataAccess (from {{ctx.SharedRoot}}.Shared.Infrastructure.Database) or DbConnection when available
+
+                    public Task<{{ctx.Model}}?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+
+                    public Task AddAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+
+                    public Task UpdateAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+
+                    public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+                        => throw new NotImplementedException();
+                }
+                """;
+
+        return
+        [
+            new(Path.Combine("DependencyInjection", $"{ctx.ModuleName}InfrastructureServiceCollectionExtensions.cs"), $$"""
+                using Microsoft.Extensions.DependencyInjection;
+                using {{ctx.LayerNamespace("Application")}}.Abstractions;
+                using {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Repositories;
+
+                namespace {{ctx.LayerNamespace("Infrastructure")}}.DependencyInjection;
+
+                public static class {{ctx.ModuleName}}InfrastructureServiceCollectionExtensions
+                {
+                    public static IServiceCollection Add{{ctx.ModuleName}}Infrastructure(this IServiceCollection services)
+                    {
+                        ArgumentNullException.ThrowIfNull(services);
+
+                        services.AddScoped<I{{ctx.Entity}}Repository, {{ctx.Entity}}Repository>();
+
+                        return services;
+                    }
+                }
+                """),
+            new(Path.Combine("Persistence", "Mapping", $"{ctx.Entity}Mapping.cs"), $$"""
+                using {{ctx.LayerNamespace("Domain")}}.Entities;
+                using {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Records;
+
+                namespace {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Mapping;
+
+                internal static class {{ctx.Entity}}Mapping
+                {
+                    internal static {{ctx.Model}} ToDomain(this {{ctx.Entity}}Row row)
+                    {
+                        ArgumentNullException.ThrowIfNull(row);
+
+                        // TODO: map {{ctx.Entity}}Row columns to {{ctx.Model}}
+                        throw new NotImplementedException();
+                    }
+
+                    internal static {{ctx.Entity}}Row ToRow(this {{ctx.Model}} model)
+                    {
+                        ArgumentNullException.ThrowIfNull(model);
+
+                        return new {{ctx.Entity}}Row
+                        {
+                            Id = model.Id,
+                            Name = model.Name
+                        };
+                    }
+                }
+                """),
+            new(Path.Combine("Persistence", "Queries", $"{ctx.Entity}Queries.cs"), $$""""
+                namespace {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Queries;
+
+                // TODO: add read-only SQL queries for {{ctx.Entity}} (e.g. via Dapper or raw SQL)
+                internal static class {{ctx.Entity}}Queries
+                {
+                    internal const string Insert{{ctx.Entity}} = """
+                        -- TODO: add SQL query
+                        """;
+                }
+                """"),
+            new(Path.Combine("Persistence", "Records", $"{ctx.Entity}Row.cs"), $$"""
+                namespace {{ctx.LayerNamespace("Infrastructure")}}.Persistence.Records;
+
+                internal sealed class {{ctx.Entity}}Row
+                {
+                    public Guid Id { get; init; }
+                    public string Name { get; init; } = string.Empty;
+
+                    // TODO: match columns in the {{ctx.Entity}} database table
+                }
+                """),
+            new(Path.Combine("Persistence", "Repositories", $"{ctx.Entity}Repository.cs"), repositoryContent)
+        ];
+    }
+
+    private static StubFile[] BuildPresentationStubs(ModuleContext ctx) =>
+    [
+        new(Path.Combine("Controllers", $"{ctx.ModuleName}Controller.cs"), $$"""
+            using FluentValidation;
+            using Microsoft.AspNetCore.Authorization;
+            using Microsoft.AspNetCore.Mvc;
+            using {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+
+            namespace {{ctx.LayerNamespace("Presentation")}}.Controllers;
+
+            [ApiController]
+            [AllowAnonymous]
+            [Route("api/v1/{{ctx.ModuleName}}")]
+            [Produces("application/json")]
+            public class {{ctx.ModuleName}}Controller : ControllerBase
+            {
+                private readonly {{ctx.UseCaseName}}Handler _{{ctx.UseCaseCamel}}Handler;
+                private readonly IValidator<{{ctx.UseCaseName}}Command> _{{ctx.UseCaseCamel}}Validator;
+
+                public {{ctx.ModuleName}}Controller(
+                    {{ctx.UseCaseName}}Handler {{ctx.UseCaseCamel}}Handler,
+                    IValidator<{{ctx.UseCaseName}}Command> {{ctx.UseCaseCamel}}Validator)
+                {
+                    _{{ctx.UseCaseCamel}}Handler = {{ctx.UseCaseCamel}}Handler
+                        ?? throw new ArgumentNullException(nameof({{ctx.UseCaseCamel}}Handler));
+                    _{{ctx.UseCaseCamel}}Validator = {{ctx.UseCaseCamel}}Validator
+                        ?? throw new ArgumentNullException(nameof({{ctx.UseCaseCamel}}Validator));
+                }
+
+                // TODO: add endpoints (Get, Create, Update, Delete)
+            }
+            """),
+        new(Path.Combine("DependencyInjection", $"{ctx.ModuleName}PresentationServiceCollectionExtensions.cs"), $$"""
+            using Microsoft.Extensions.DependencyInjection;
+            using {{ctx.LayerNamespace("Presentation")}}.Controllers;
+
+            namespace {{ctx.LayerNamespace("Presentation")}}.DependencyInjection;
+
+            public static class {{ctx.ModuleName}}PresentationServiceCollectionExtensions
+            {
+                public static IMvcBuilder Add{{ctx.ModuleName}}Presentation(
+                    this IMvcBuilder mvcBuilder)
+                {
+                    ArgumentNullException.ThrowIfNull(mvcBuilder);
+
+                    mvcBuilder.AddApplicationPart(
+                        typeof({{ctx.ModuleName}}Controller).Assembly);
+
+                    return mvcBuilder;
+                }
+            }
+            """),
+        new(Path.Combine("Mapping", $"{ctx.Entity}Mapping.cs"), $$"""
+            using {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+            using {{ctx.LayerNamespace("Contracts")}}.Requests;
+            using {{ctx.LayerNamespace("Contracts")}}.Responses;
+
+            namespace {{ctx.LayerNamespace("Presentation")}}.Mapping;
+
+            internal static class {{ctx.Entity}}Mapping
+            {
+                internal static {{ctx.UseCaseName}}Command ToCommand(this Create{{ctx.Entity}}Request request, Guid? id = null)
+                {
+                    ArgumentNullException.ThrowIfNull(request);
+
+                    return new {{ctx.UseCaseName}}Command(
+                        id ?? Guid.NewGuid(),
+                        request.Name);
+                }
+
+                internal static {{ctx.Entity}}Response ToResponse(this {{ctx.UseCaseName}}ReadModel readModel)
+                {
+                    ArgumentNullException.ThrowIfNull(readModel);
+
+                    return new {{ctx.Entity}}Response
+                    {
+                        Id = readModel.Id,
+                        Name = readModel.Name
+                    };
+                }
+            }
+            """),
+        new(Path.Combine("Validation", $"Create{ctx.Entity}RequestValidation.cs"), $$"""
+            using FluentValidation;
+            using {{ctx.LayerNamespace("Contracts")}}.Requests;
+
+            namespace {{ctx.LayerNamespace("Presentation")}}.Validation;
+
+            public sealed class Create{{ctx.Entity}}RequestValidation
+                : AbstractValidator<Create{{ctx.Entity}}Request>
+            {
+                public Create{{ctx.Entity}}RequestValidation()
+                {
+                    RuleFor(request => request.Name)
+                        .NotEmpty().WithMessage("Name is required.")
+                        .MaximumLength(100).WithMessage("Name must not exceed 100 characters.");
+                }
+            }
+            """)
+    ];
+
+    private static StubFile[] BuildUnitTestFiles(ModuleContext ctx) =>
+    [
+        new(Path.Combine("Controllers", $"{ctx.ModuleName}ControllerTests.cs"), $$"""
+            using Xunit;
+            using {{ctx.LayerNamespace("Application")}}.Abstractions;
+            using {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+            using {{ctx.LayerNamespace("Application")}}.Validation;
+            using {{ctx.LayerNamespace("Domain")}}.Entities;
+            using {{ctx.LayerNamespace("Presentation")}}.Controllers;
+
+            namespace {{ctx.TestName}}.Controllers;
+
+            public class {{ctx.ModuleName}}ControllerTests
+            {
+                [Fact]
+                public void Controller_Can_Be_Instantiated()
+                {
+                    var handler = new {{ctx.UseCaseName}}Handler(new Fake{{ctx.Entity}}Repository());
+                    var validator = new {{ctx.UseCaseName}}CommandValidator();
+                    var controller = new {{ctx.ModuleName}}Controller(handler, validator);
+
+                    Assert.NotNull(controller);
+                }
+
+                // TODO: add tests for each {{ctx.ModuleName}}Controller endpoint once implemented
+
+                private sealed class Fake{{ctx.Entity}}Repository : I{{ctx.Entity}}Repository
+                {
+                    public Task<{{ctx.Model}}?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+                        => Task.FromResult<{{ctx.Model}}?>(null);
+
+                    public Task AddAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => Task.CompletedTask;
+
+                    public Task UpdateAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => Task.CompletedTask;
+
+                    public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+                        => Task.CompletedTask;
+                }
+            }
+            """),
+        new(Path.Combine("UseCases", $"{ctx.UseCaseName}HandlerTests.cs"), $$"""
+            using Xunit;
+            using {{ctx.LayerNamespace("Application")}}.Abstractions;
+            using {{ctx.LayerNamespace("Application")}}.UseCases.{{ctx.UseCaseName}};
+            using {{ctx.LayerNamespace("Domain")}}.Entities;
+
+            namespace {{ctx.TestName}}.UseCases;
+
+            public class {{ctx.UseCaseName}}HandlerTests
+            {
+                [Fact]
+                public void Constructor_Throws_When_Repository_Is_Null()
+                {
+                    Assert.Throws<ArgumentNullException>(() => new {{ctx.UseCaseName}}Handler(null!));
+                }
+
+                [Fact]
+                public async Task HandleAsync_Returns_Created_Result()
+                {
+                    var handler = new {{ctx.UseCaseName}}Handler(new Fake{{ctx.Entity}}Repository());
+                    var command = new {{ctx.UseCaseName}}Command(Guid.NewGuid(), "Sample {{ctx.Entity}}");
+
+                    var result = await handler.HandleAsync(command);
+
+                    var created = Assert.IsType<{{ctx.UseCaseName}}Result.Created>(result);
+                    Assert.Equal(command.Id, created.Id);
+                }
+
+                // TODO: add tests for {{ctx.UseCaseName}}Handler business rules and edge cases
+
+                private sealed class Fake{{ctx.Entity}}Repository : I{{ctx.Entity}}Repository
+                {
+                    public Task<{{ctx.Model}}?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+                        => Task.FromResult<{{ctx.Model}}?>(null);
+
+                    public Task AddAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => Task.CompletedTask;
+
+                    public Task UpdateAsync({{ctx.Model}} entity, CancellationToken cancellationToken = default)
+                        => Task.CompletedTask;
+
+                    public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+                        => Task.CompletedTask;
+                }
+            }
+            """)
+    ];
+
+    // Empty sub-folders that don't get a stub file yet but should still exist
+    // on disk to match the standard module layout.
+    private static (string Layer, string[] ExtraDirs)[] BuildExtraDirPlan() =>
+    [
+        ("Domain", ["ValueObjects"]),
+        ("Contracts", ["Criteria"]),
+        ("Application", []),
+        ("Infrastructure", ["Configuration", "Services"]),
+        ("Presentation", []),
+    ];
+
+    // ----- generation steps -----
+
+    private static bool CreateLayerProjects(
+        ModuleContext ctx,
+        string slnPath,
+        (string Layer, StubFile[] Stubs)[] stubPlan,
+        (string Layer, string[] ExtraDirs)[] extraDirPlan)
+    {
+        foreach (var (layer, stubs) in stubPlan)
         {
-            string name = $"{prefix}.{layer}";
-            string outDir = LayerDir(layer);
+            string name = $"{ctx.Prefix}.{layer}";
+            string outDir = ctx.LayerDir(layer);
 
             if (!DotnetCli.RunDotnet($"new classlib -n \"{name}\" -o \"{outDir}\""))
             {
                 Console.WriteLine($"Failed creating \"{name}\". Aborting.");
-                return;
+                return false;
             }
 
             string defaultClassFile = Path.Combine(outDir, "Class1.cs");
@@ -362,25 +704,22 @@ internal static class ModuleGenerator
                 Console.WriteLine($"  removed default {defaultClassFile}");
             }
 
-            foreach (var (file, content) in stubs)
+            foreach (var stub in stubs)
             {
-                string filePath = Path.Combine(outDir, file);
+                string filePath = Path.Combine(outDir, stub.RelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-                File.WriteAllText(filePath, content + Environment.NewLine);
+                File.WriteAllText(filePath, stub.Content + Environment.NewLine);
                 Console.WriteLine($"  created {filePath}");
             }
 
-            var extraDirs = extraDirPlanReal.First(p => p.layer == layer).extraDirs;
+            var extraDirs = extraDirPlan.First(p => p.Layer == layer).ExtraDirs;
             foreach (var dir in extraDirs)
             {
                 string dirPath = Path.Combine(outDir, dir);
                 Directory.CreateDirectory(dirPath);
 
-                // Empty folders aren't tracked by git and won't show up in Visual Studio /
-                // Rider's Solution Explorer, since SDK-style projects only surface folders
-                // that contain at least one item matched by the implicit glob — and that
-                // glob explicitly EXCLUDES dot-files (**/.*), so ".gitkeep" doesn't work.
-                // Use a plain, non-dot filename instead so it's picked up as a <None> item.
+                // SDK-style projects exclude dot-files (**/.*) from implicit globs, so ".gitkeep"
+                // won't surface empty folders in Visual Studio / Rider Solution Explorer.
                 string dirLabel = dir.Replace(Path.DirectorySeparatorChar, '/').Split('/').Last();
                 string keepFilePath = Path.Combine(dirPath, "README.md");
                 File.WriteAllText(keepFilePath, $"Reserved for {dirLabel}. Safe to delete this file once real content lives here.{Environment.NewLine}");
@@ -389,156 +728,133 @@ internal static class ModuleGenerator
             }
         }
 
-        // 2. Add each layer to the solution
-        foreach (var layer in layers)
+        foreach (var layer in Layers)
         {
-            if (!DotnetCli.RunDotnet($"sln \"{slnPath}\" add \"{LayerCsProj(layer)}\""))
+            if (!DotnetCli.RunDotnet($"sln \"{slnPath}\" add \"{ctx.LayerCsProj(layer)}\""))
             {
-                Console.WriteLine($"Failed adding \"{prefix}.{layer}\" to solution. Aborting.");
-                return;
+                Console.WriteLine($"Failed adding \"{ctx.Prefix}.{layer}\" to solution. Aborting.");
+                return false;
             }
         }
 
-        // 3. Wire internal module references FIRST, unconditionally.
-        // These never depend on Shared projects existing, so Contracts/Application/
-        // Infrastructure/Presentation always get their internal references wired
-        // even if Shared.* isn't there yet.
-        if (!AddReference(LayerCsProj("Contracts"),
-                LayerCsProj("Domain"))) return;
+        return true;
+    }
 
-        if (!AddReference(LayerCsProj("Application"),
-                LayerCsProj("Contracts"), LayerCsProj("Domain"))) return;
+    private static bool WireProjectReferences(ModuleContext ctx)
+    {
+        if (!AddReference(ctx.LayerCsProj("Contracts"),
+                ctx.LayerCsProj("Domain"))) return false;
 
-        if (!AddReference(LayerCsProj("Infrastructure"),
-                LayerCsProj("Application"), LayerCsProj("Contracts"), LayerCsProj("Domain"))) return;
+        if (!AddReference(ctx.LayerCsProj("Application"),
+                ctx.LayerCsProj("Contracts"), ctx.LayerCsProj("Domain"))) return false;
 
-        if (!AddReference(LayerCsProj("Presentation"),
-                LayerCsProj("Application"), LayerCsProj("Contracts"))) return;
+        if (!AddReference(ctx.LayerCsProj("Infrastructure"),
+                ctx.LayerCsProj("Application"), ctx.LayerCsProj("Contracts"), ctx.LayerCsProj("Domain"))) return false;
 
-        // 3a. Presentation needs the ASP.NET Core framework reference for ControllerBase / IMvcBuilder.
-        string presentationCsproj = LayerCsProj("Presentation");
+        if (!AddReference(ctx.LayerCsProj("Presentation"),
+                ctx.LayerCsProj("Application"), ctx.LayerCsProj("Contracts"))) return false;
+
+        // Presentation needs the ASP.NET Core framework reference for ControllerBase / IMvcBuilder.
+        string presentationCsproj = ctx.LayerCsProj("Presentation");
         if (File.Exists(presentationCsproj))
         {
             string csprojContent = File.ReadAllText(presentationCsproj);
             if (!csprojContent.Contains("Microsoft.AspNetCore.App"))
             {
-                csprojContent = csprojContent.Replace("</Project>", "  <ItemGroup>\n    <FrameworkReference Include=\"Microsoft.AspNetCore.App\" />\n  </ItemGroup>\n</Project>");
+                csprojContent = csprojContent.Replace(
+                    "</Project>",
+                    "  <ItemGroup>\n    <FrameworkReference Include=\"Microsoft.AspNetCore.App\" />\n  </ItemGroup>\n</Project>");
                 File.WriteAllText(presentationCsproj, csprojContent);
             }
         }
 
-        // 3b. Wire Shared.* references as best-effort. Skipped (with a warning, not an
-        // abort) if the Shared project doesn't exist on disk yet, or if --no-shared was passed.
-        if (!skipShared)
+        if (!ctx.SkipShared)
         {
-            TryAddSharedReference(LayerCsProj("Domain"), SharedCsProj("Domain"));
-            TryAddSharedReference(LayerCsProj("Application"), SharedCsProj("Application"));
-            TryAddSharedReference(LayerCsProj("Infrastructure"), SharedCsProj("Infrastructure"));
+            TryAddSharedReference(ctx.LayerCsProj("Domain"), ctx.SharedCsProj("Domain"));
+            TryAddSharedReference(ctx.LayerCsProj("Application"), ctx.SharedCsProj("Application"));
+            TryAddSharedReference(ctx.LayerCsProj("Infrastructure"), ctx.SharedCsProj("Infrastructure"));
         }
         else
         {
             Console.WriteLine("Skipped Shared.* references (--no-shared).");
         }
 
-        // 3c. Wire the module's entry-point-facing projects into a host project, if --host was given.
-        // Best-effort: a missing/ambiguous host never blocks the rest of the module scaffold.
-        if (hostCsproj != null)
+        return true;
+    }
+
+    private static bool CreateUnitTestProject(ModuleContext ctx, string slnPath, StubFile[] unitTestFiles)
+    {
+        if (!DotnetCli.RunDotnet($"new xunit -n \"{ctx.TestName}\" -o \"{ctx.TestDir}\""))
         {
-            if (AddReference(hostCsproj, LayerCsProj("Presentation"), LayerCsProj("Application"), LayerCsProj("Infrastructure")))
-                Console.WriteLine($"  Wired host references: {hostCsproj} -> Presentation, Application, Infrastructure");
-            else
-                Console.WriteLine($"  Warning: failed to wire host references into {hostCsproj}");
-        }
-        else if (hostArg != null)
-        {
-            Console.WriteLine("Skipped host wiring (could not resolve --host to a single .csproj).");
+            Console.WriteLine($"Failed creating \"{ctx.TestName}\". Aborting.");
+            return false;
         }
 
-        // 4. Unit test project
-        if (!DotnetCli.RunDotnet($"new xunit -n {testName} -o \"{testDir}\""))
+        if (!DotnetCli.RunDotnet($"sln \"{slnPath}\" add \"{ctx.TestCsProj}\""))
         {
-            Console.WriteLine($"Failed creating \"{testName}\". Aborting.");
-            return;
+            Console.WriteLine($"Failed adding \"{ctx.TestName}\" to solution. Aborting.");
+            return false;
         }
-        if (!DotnetCli.RunDotnet($"sln \"{slnPath}\" add \"{testCsProj}\""))
-        {
-            Console.WriteLine($"Failed adding \"{testName}\" to solution. Aborting.");
-            return;
-        }
-        if (!AddReference(testDir, LayerCsProj("Application"), LayerCsProj("Presentation"))) return;
 
-        string defaultTestFile = Path.Combine(testDir, "UnitTest1.cs");
+        if (!AddReference(ctx.TestCsProj, ctx.LayerCsProj("Application"), ctx.LayerCsProj("Presentation")))
+            return false;
+
+        string defaultTestFile = Path.Combine(ctx.TestDir, "UnitTest1.cs");
         if (File.Exists(defaultTestFile))
         {
             File.Delete(defaultTestFile);
             Console.WriteLine($"  removed default {defaultTestFile}");
         }
 
-        string controllerTestPath = Path.Combine(testDir, "Controllers", $"{entity}ControllerTests.cs");
-        Directory.CreateDirectory(Path.GetDirectoryName(controllerTestPath)!);
-        File.WriteAllText(controllerTestPath, $$"""
-            using Xunit;
-            using {{LayerNamespace("Presentation")}}.Controllers;
-
-            namespace {{testName}}.Controllers;
-
-            public class {{entity}}ControllerTests
-            {
-                [Fact]
-                public void Controller_Can_Be_Instantiated()
-                {
-                    var controller = new {{entity}}Controller(null!);
-
-                    Assert.NotNull(controller);
-                }
-
-                // TODO: add tests for each {{entity}}Controller endpoint once implemented
-            }
-
-            """);
-        Console.WriteLine($"  created {controllerTestPath}");
-
-        Console.WriteLine();
-        Console.WriteLine("============================================================");
-        Console.WriteLine($" Module \"{moduleFolderName}\" ({prefix}) scaffolded successfully.");
-        Console.WriteLine("============================================================");
-
-        // ----- forced NuGet packages -----
-
-        var forcedPackages = new (string layer, string package)[]
+        foreach (var file in unitTestFiles)
         {
-            ("Application", "FluentValidation"),
-            ("Application", "Microsoft.Extensions.DependencyInjection.Abstractions"),
-            ("Application", "FluentValidation.DependencyInjectionExtensions"),
-            ("Infrastructure", "Microsoft.Extensions.DependencyInjection.Abstractions"),
-            ("Presentation", "Microsoft.Extensions.DependencyInjection.Abstractions"),
-            ("Presentation", "FluentValidation"),
-            ("Presentation", "Microsoft.AspNetCore.Http.Abstractions"),
-        };
-
-        foreach (var (layer, package) in forcedPackages)
-        {
-            if (AddPackage(LayerCsProj(layer), package))
-                Console.WriteLine($"  Installed package \"{package}\" into {prefix}.{layer}.");
-            else
-                Console.WriteLine($"  Warning: failed to install package \"{package}\" into {prefix}.{layer}.");
+            string fullPath = Path.Combine(ctx.TestDir, file.RelativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, file.Content + Environment.NewLine);
+            Console.WriteLine($"  created {fullPath}");
         }
 
+        return true;
+    }
+
+    private static void InstallForcedPackages(ModuleContext ctx)
+    {
+        foreach (var (layer, package) in ForcedPackages)
+        {
+            if (AddPackage(ctx.LayerCsProj(layer), package))
+                Console.WriteLine($"  Installed package \"{package}\" into {ctx.Prefix}.{layer}.");
+            else
+                Console.WriteLine($"  Warning: failed to install package \"{package}\" into {ctx.Prefix}.{layer}.");
+        }
+    }
+
+    private static void WireHostProject(ModuleContext ctx, string? hostArg, string? hostCsproj, bool isDryRun)
+    {
         if (hostCsproj != null)
         {
-            if (AddReference(hostCsproj, LayerCsProj("Presentation"), LayerCsProj("Application"), LayerCsProj("Infrastructure")))
+            if (AddReference(hostCsproj, ctx.LayerCsProj("Presentation"), ctx.LayerCsProj("Application"), ctx.LayerCsProj("Infrastructure")))
             {
                 Console.WriteLine($"  Wired host references: {hostCsproj} -> Presentation, Application, Infrastructure");
-                AddServiceInjectionInEntryPoints.PatchProgramCs(hostCsproj, prefix, moduleFolderName, isDryRun);
+                AddServiceInjectionInEntryPoints.PatchProgramCs(hostCsproj, ctx.Prefix, ctx.ModuleName, isDryRun);
             }
             else
             {
                 Console.WriteLine($"  Warning: failed to wire host references into {hostCsproj}");
             }
         }
+        else if (hostArg != null)
+        {
+            Console.WriteLine("Skipped host wiring (could not resolve --host to a single .csproj).");
+        }
     }
 
     // ----- private helpers -----
+
+    // Fixed shared-project convention: {sharedRoot}.Shared.<Layer> under src/Shared.
+    // Not derived from --name, so a mistyped module prefix can't point references
+    // at the wrong shared projects.
+    private static string GetSharedCsProjPath(string sharedRoot, string layer) =>
+        Path.Combine("src", "Shared", $"{sharedRoot}.Shared.{layer}", $"{sharedRoot}.Shared.{layer}.csproj");
 
     private static bool AddReference(string projectPathOrDir, params string[] references)
     {
@@ -546,9 +862,6 @@ internal static class ModuleGenerator
         return DotnetCli.RunDotnet($"add \"{projectPathOrDir}\" reference {refs}");
     }
 
-    // Best-effort: only attempts the reference if the target Shared csproj actually
-    // exists on disk. If it doesn't, prints a warning and moves on instead of failing
-    // the whole scaffold.
     private static void TryAddSharedReference(string projectPathOrDir, string sharedCsprojPath)
     {
         if (!File.Exists(sharedCsprojPath))
@@ -573,70 +886,87 @@ internal static class ModuleGenerator
     // ----- dry-run output -----
 
     private static void PrintDryRun(
-        string prefix, string moduleRoot, string model, string? entityOverride, string moduleFolderName,
-        string sharedRoot, string? slnPath, string? hostArg, string? hostCsproj, bool skipShared,
-        string testName, string testDir, string entity,
-        Func<(string layer, (string file, string content)[] stubs)[]> stubPlanFactory,
-        Func<(string layer, string[] extraDirs)[]> extraDirPlanFactory,
-        Func<string, string> layerDir,
-        Func<string, string> layerCsProj,
-        Func<string, string> sharedCsProj)
+        ModuleContext ctx,
+        string? entityOverride,
+        string? slnPath,
+        string? hostArg,
+        string? hostCsproj,
+        (string Layer, StubFile[] Stubs)[] stubPlan,
+        (string Layer, string[] ExtraDirs)[] extraDirPlan,
+        StubFile[] unitTestFiles)
     {
         Console.WriteLine("=== DRY RUN (module) — no changes will be made ===");
         Console.WriteLine();
-        Console.WriteLine($"Module root: {moduleRoot}");
-        Console.WriteLine($"Entity:      {model}  (from {(entityOverride != null ? "--entity" : $"singularized \"{moduleFolderName}\"")})");
-        Console.WriteLine($"Shared root: {sharedRoot}  (from {(sharedRoot == "MBPOS" ? "default" : "--shared-root")})");
+        Console.WriteLine($"Module root: {ctx.ModuleRoot}");
+        Console.WriteLine($"Entity:      {ctx.Model}  (from {(entityOverride != null ? "--entity" : $"singularized \"{ctx.ModuleName}\"")})");
+        Console.WriteLine($"UseCase:     {ctx.UseCaseName}");
+        Console.WriteLine($"Shared root: {ctx.SharedRoot}  (from {(ctx.SharedRoot == "MBPOS" ? "default" : "--shared-root")})");
         Console.WriteLine();
-
-        var stubPlan = stubPlanFactory();
-        var extraDirPlan = extraDirPlanFactory();
 
         foreach (var (layer, stubs) in stubPlan)
         {
-            Console.WriteLine($"[WILL CREATE] classlib  {prefix}.{layer}  -> {layerDir(layer)}");
-            Console.WriteLine($"[WILL DELETE]           {Path.Combine(layerDir(layer), "Class1.cs")}");
-            foreach (var (file, _) in stubs)
-                Console.WriteLine($"[WILL CREATE]           {Path.Combine(layerDir(layer), file)}");
+            string layerDir = ctx.LayerDir(layer);
+            Console.WriteLine($"[WILL CREATE] classlib  {ctx.Prefix}.{layer}  -> {layerDir}");
+            Console.WriteLine($"[WILL DELETE]           {Path.Combine(layerDir, "Class1.cs")}");
+            foreach (var stub in stubs)
+                Console.WriteLine($"[WILL CREATE]           {Path.Combine(layerDir, stub.RelativePath)}");
 
-            var extraDirs = extraDirPlan.First(p => p.layer == layer).extraDirs;
+            var extraDirs = extraDirPlan.First(p => p.Layer == layer).ExtraDirs;
             foreach (var dir in extraDirs)
-                Console.WriteLine($"[WILL CREATE DIR]       {Path.Combine(layerDir(layer), dir)}  (+ README.md)");
+                Console.WriteLine($"[WILL CREATE DIR]       {Path.Combine(layerDir, dir)}  (+ README.md)");
         }
-        Console.WriteLine($"[WILL CREATE] xunit     {testName}  -> {testDir}");
-        Console.WriteLine($"[WILL DELETE]           {Path.Combine(testDir, "UnitTest1.cs")}");
-        Console.WriteLine($"[WILL CREATE]           {Path.Combine(testDir, "Controllers", $"{entity}ControllerTests.cs")}");
+
+        Console.WriteLine($"[WILL CREATE] xunit     {ctx.TestName}  -> {ctx.TestDir}");
+        Console.WriteLine($"[WILL DELETE]           {Path.Combine(ctx.TestDir, "UnitTest1.cs")}");
+        foreach (var file in unitTestFiles)
+            Console.WriteLine($"[WILL CREATE]           {Path.Combine(ctx.TestDir, file.RelativePath)}");
         Console.WriteLine();
+
         Console.WriteLine("[WILL WIRE INTERNAL REFERENCES] (always applied)");
-        Console.WriteLine($"  Contracts       -> Domain");
-        Console.WriteLine($"  Application     -> Contracts, Domain");
-        Console.WriteLine($"  Infrastructure  -> Application, Contracts, Domain");
-        Console.WriteLine($"  Presentation    -> Application, Contracts");
-        Console.WriteLine($"  UnitTests       -> Application, Presentation");
+        Console.WriteLine("  Contracts       -> Domain");
+        Console.WriteLine("  Application     -> Contracts, Domain");
+        Console.WriteLine("  Infrastructure  -> Application, Contracts, Domain");
+        Console.WriteLine("  Presentation    -> Application, Contracts");
+        Console.WriteLine("  UnitTests       -> Application, Presentation");
         Console.WriteLine();
+
         Console.WriteLine("[WILL ADD FRAMEWORK REFERENCE]");
-        Console.WriteLine($"  Presentation    -> Microsoft.AspNetCore.App  (for ControllerBase / IMvcBuilder)");
+        Console.WriteLine("  Presentation    -> Microsoft.AspNetCore.App  (for ControllerBase / IMvcBuilder)");
         Console.WriteLine();
-        if (skipShared)
+
+        Console.WriteLine("[WILL INSTALL NUGET PACKAGES]");
+        foreach (var (layer, package) in ForcedPackages)
+            Console.WriteLine($"  {layer,-15} -> {package}");
+        Console.WriteLine();
+
+        if (ctx.SkipShared)
         {
             Console.WriteLine("[SKIP] Shared.* references skipped (--no-shared)");
         }
         else
         {
             Console.WriteLine("[WILL WIRE SHARED REFERENCES] (best-effort — skipped with a warning if the project isn't found)");
-            Console.WriteLine($"  Domain          -> {sharedCsProj("Domain")}{(File.Exists(sharedCsProj("Domain")) ? "" : "  [NOT FOUND]")}");
-            Console.WriteLine($"  Application     -> {sharedCsProj("Application")}{(File.Exists(sharedCsProj("Application")) ? "" : "  [NOT FOUND]")}");
-            Console.WriteLine($"  Infrastructure  -> {sharedCsProj("Infrastructure")}{(File.Exists(sharedCsProj("Infrastructure")) ? "" : "  [NOT FOUND]")}");
+            Console.WriteLine($"  Domain          -> {ctx.SharedCsProj("Domain")}{(File.Exists(ctx.SharedCsProj("Domain")) ? "" : "  [NOT FOUND]")}");
+            Console.WriteLine($"  Application     -> {ctx.SharedCsProj("Application")}{(File.Exists(ctx.SharedCsProj("Application")) ? "" : "  [NOT FOUND]")}");
+            Console.WriteLine($"  Infrastructure  -> {ctx.SharedCsProj("Infrastructure")}{(File.Exists(ctx.SharedCsProj("Infrastructure")) ? "" : "  [NOT FOUND]")}");
         }
         Console.WriteLine();
+
         if (hostArg != null)
         {
-            Console.WriteLine(hostCsproj != null
-                ? $"[WILL WIRE HOST REFERENCES] {hostCsproj}\n" +
-                  $"  <- Presentation, Application, Infrastructure"
-                : $"[SKIP] --host \"{hostArg}\" could not be resolved to a single .csproj — host wiring skipped.");
+            if (hostCsproj != null)
+            {
+                Console.WriteLine($"[WILL WIRE HOST REFERENCES] {hostCsproj}\n" +
+                                  $"  <- Presentation, Application, Infrastructure");
+                AddServiceInjectionInEntryPoints.PatchProgramCs(hostCsproj, ctx.Prefix, ctx.ModuleName, isDryRun: true);
+            }
+            else
+            {
+                Console.WriteLine($"[SKIP] --host \"{hostArg}\" could not be resolved to a single .csproj — host wiring skipped.");
+            }
             Console.WriteLine();
         }
+
         Console.WriteLine(slnPath != null
             ? $"[WILL REGISTER] All projects above added to solution: {slnPath}"
             : "[SKIP] No solution file found or specified — projects will NOT be added to a solution.");

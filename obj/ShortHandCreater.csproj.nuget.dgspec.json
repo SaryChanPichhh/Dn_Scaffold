@@ -1,25 +1,25 @@
 {
   "format": 1,
   "restore": {
-    "D:\\BackUp\\ShortHandCreater\\ShortHandCreater.csproj": {}
+    "D:\\TD_System\\DnBuilder\\ShortHandCreater.csproj": {}
   },
   "projects": {
-    "D:\\BackUp\\ShortHandCreater\\ShortHandCreater.csproj": {
-      "version": "1.0.5",
+    "D:\\TD_System\\DnBuilder\\ShortHandCreater.csproj": {
+      "version": "1.0.9",
       "restore": {
-        "projectUniqueName": "D:\\BackUp\\ShortHandCreater\\ShortHandCreater.csproj",
+        "projectUniqueName": "D:\\TD_System\\DnBuilder\\ShortHandCreater.csproj",
         "projectName": "DnScaffold",
-        "projectPath": "D:\\BackUp\\ShortHandCreater\\ShortHandCreater.csproj",
+        "projectPath": "D:\\TD_System\\DnBuilder\\ShortHandCreater.csproj",
         "packagesPath": "C:\\Users\\USER\\.nuget\\packages\\",
-        "outputPath": "D:\\BackUp\\ShortHandCreater\\obj\\",
+        "outputPath": "D:\\TD_System\\DnBuilder\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
-          "C:\\Program Files\\DevExpress 25.2\\Components\\Offline Packages",
+          "C:\\Program Files\\DevExpress 26.1\\Components\\Offline Packages",
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
         ],
         "configFilePaths": [
           "C:\\Users\\USER\\AppData\\Roaming\\NuGet\\NuGet.Config",
-          "C:\\Program Files (x86)\\NuGet\\Config\\DevExpress 25.2.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\DevExpress 26.1.config",
           "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
           "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
         ],
@@ -28,7 +28,7 @@
         ],
         "sources": {
           "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
-          "C:\\Program Files\\DevExpress 25.2\\Components\\System\\Components\\Packages": {},
+          "C:\\Program Files\\DevExpress 26.1\\Components\\System\\Components\\Packages": {},
           "https://api.nuget.org/v3/index.json": {}
         },
         "frameworks": {

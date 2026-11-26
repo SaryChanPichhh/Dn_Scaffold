@@ -1,0 +1,5 @@
+D:\TD_System\DnBuilder\bin\Release\net10.0\publish\ShortHandCreater.exe
+D:\TD_System\DnBuilder\bin\Release\net10.0\publish\ShortHandCreater.dll
+D:\TD_System\DnBuilder\bin\Release\net10.0\publish\ShortHandCreater.deps.json
+D:\TD_System\DnBuilder\bin\Release\net10.0\publish\ShortHandCreater.runtimeconfig.json
+D:\TD_System\DnBuilder\bin\Release\net10.0\publish\ShortHandCreater.pdb
